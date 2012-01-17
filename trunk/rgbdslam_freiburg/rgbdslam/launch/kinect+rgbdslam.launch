@@ -5,9 +5,6 @@
     <param name="config/topic_image_mono"              value="/camera/rgb/image_color"/> <!--could also be color -->
   	<param name="config/topic_image_depth"             value="/camera/depth/image"/>
     <param name="config/topic_points"                  value=""/> <!--if empty, poincloud will be reconstructed from image and depth -->
-    <param name="config/feature_detector_type"         value="ORB"/><!-- If SIFTGPU is enabled in CMakeLists.txt, use SURF here -->
-    <param name="config/feature_extractor_type"        value="ORB"/><!-- If SIFTGPU is enabled in CMakeLists.txt, use SURF here -->
-    <param name="config/matcher_type"                  value="BRUTEFORCE"/> <!-- FLANN (not avail for ORB features), SIFTGPU (only for SIFTGPU detector)  or BRUTEFORCE-->
   <!--node pkg="rviz" type="rviz" name="rviz" args="-d $(find rgbdslam)/launch/rviz_config.vcg" respawn="false" output="log" > </node-->
   <!--node pkg="rxtools" type="rxconsole" name="rxconsole" output="log" > </node-->
 </launch>
