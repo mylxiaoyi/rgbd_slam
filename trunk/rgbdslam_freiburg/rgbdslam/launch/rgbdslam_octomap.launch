@@ -1,19 +1,34 @@
 <launch>
+  <env name="ROSCONSOLE_CONFIG_FILE" value="$(find rgbdslam)/log.conf"/>
+  
   <!--might only work with the experimental octomap (as of May 11)-->
     <include file="$(find openni_camera)/launch/openni_node.launch"/>
-    <node pkg="rgbdslam" type="rgbdslam" name="rgbdslam" cwd="node" required="false" output="log" > </node>
+    <node pkg="rgbdslam" type="rgbdslam" name="rgbdslam" cwd="node" required="false" output="log" > 
+      <param name="config/topic_image_mono"              value="/camera/rgb/image_color"/>
+      <param name="config/wide_topic"                    value=""/>;
+      <param name="config/wide_cloud_topic"              value=""/>;
+      <param name="config/drop_async_frames"             value="true"/> <!-- Check association of depth and visual image, reject if not in sync -->
+      <param name="config/feature_detector_type"         value="SURF"/><!-- If SIFTGPU is enabled in CMakeLists.txt, use SURF here -->
+      <param name="config/feature_extractor_type"        value="SURF"/><!-- If SIFTGPU is enabled in CMakeLists.txt, use SURF here -->
+      <param name="config/matcher_type"                  value="FLANN"/> <!-- FLANN (not avail for ORB features), SIFTGPU (only for SIFTGPU detector)  or BRUTEFORCE-->
+      <param name="config/max_keypoints"                 value="1000"/><!-- Extract no more than this many keypoints (not honored by SIFTGPU)-->
+      <param name="config/min_keypoints"                 value="600"/><!-- Extract no less than this many ... -->
+      <param name="config/optimizer_skip_step"           value="5"/><!-- optimize every n-th frame -->
+      <param name="config/store_pointclouds"             value="true"/> <!-- if, e.g., only trajectory is required, setting this to false saves lots of memory -->
+      <param name="config/individual_cloud_out_topic"    value="/rgbdslam/batch_clouds"/>;
+    </node>
+
     <!-- Launch octomap_server for mappingL: Listens to incoming PointCloud2 data 
     and incrementally build an octomap. The data is sent out in different representations. -->
-    <node pkg="octomap_server" type="octomap_server_node" name="octomap_server">
-      <param name="resolution" value="0.025" />
-      
+    <node pkg="octomap_server" type="color_octomap_server_node" name="color_octomap_server" output="screen">
+      <param name="resolution" value="0.02" />
       <!-- fixed map frame (set to 'map' if SLAM or localization running!) -->
-      <param name="frame_id" type="string" value="openni_camera" />
-      
+      <param name="frame_id" type="string" value="map" />
       <!-- maximum range to integrate (speedup, accuracy) -->
-      <param name="max_sensor_range" value="5.0" />
-      
+      <param name="max_sensor_range" value="4.0" />
+      <!-- Save octomap here on destruction of the server -->
+      <param name="save_directory" value="$(optenv OCTOMAP_SAVE_DIR ./)" />
       <!-- data source to integrate (PointCloud2) -->
-          <remap from="cloud_in" to="/rgbdslam/batch_clouds" />
+      <remap from="cloud_in" to="/rgbdslam/batch_clouds" />
     </node>
 </launch>

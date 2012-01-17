@@ -30,7 +30,7 @@
 #include <pcl/filters/voxel_grid.h>
 using namespace std;
 
-void saveCloud(const char* filename, const PointCloud_RGB& pc, const int max_cnt, const bool color){
+void saveCloud(const char* filename, const pointcloud_type& pc, const int max_cnt, const bool color){
 
     ofstream of;
     of.open(filename);
@@ -48,7 +48,7 @@ void saveCloud(const char* filename, const PointCloud_RGB& pc, const int max_cnt
     // only write every write_step.th points
     for (unsigned int i=0; i<pc.points.size(); i += write_step)
     {
-        Point p = pc.points[i];
+        point_type p = pc.points[i];
 
         bool invalid = (isnan(p.x) || isnan(p.y) || isnan(p.z));
         if (invalid)
@@ -80,10 +80,10 @@ void saveCloud(const char* filename, const PointCloud_RGB& pc, const int max_cnt
 }
 
 
-void downSample(const PointCloud_RGB& src, PointCloud_RGB& to){
-    pcl::VoxelGrid<Point> down_sampler;
+void downSample(const pointcloud_type& src, pointcloud_type& to){
+    pcl::VoxelGrid<point_type> down_sampler;
     down_sampler.setLeafSize (0.01, 0.01, 0.01);
-    pcl::PCLBase<Point>::PointCloudConstPtr const_cloud_ptr = boost::make_shared<PointCloud_RGB> (src);
+    pcl::PCLBase<point_type>::PointCloudConstPtr const_cloud_ptr = boost::make_shared<pointcloud_type> (src);
     down_sampler.setInputCloud (const_cloud_ptr);
     down_sampler.filter(to);
     ROS_INFO("gicp.cpp: Downsampling from %i to %i", (int) src.points.size(), (int) to.points.size());
@@ -91,7 +91,7 @@ void downSample(const PointCloud_RGB& src, PointCloud_RGB& to){
 
 
 
-bool gicpfallback(const PointCloud_RGB& from, const PointCloud_RGB& to, Eigen::Matrix4f& transform){
+bool gicpfallback(const pointcloud_type& from, const pointcloud_type& to, Eigen::Matrix4f& transform){
 
 	// std::clock_t starttime_gicp = std::clock();
 	
@@ -106,9 +106,9 @@ bool gicpfallback(const PointCloud_RGB& from, const PointCloud_RGB& to, Eigen::M
     sprintf(f2, "pc2.txt");
 
     // default values for algo work well on this data
-    sprintf(cmd, "./gicp/test_gicp %s %s --d_max 0.01  --debug 0",f1,f2); 
+    sprintf(cmd, "/home/endres/Phd/rospacks/rgbdslam/external/gicp/test_gicp %s %s --d_max 0.1  --debug 0",f1,f2); 
 
-    int N = 40000;
+    int N = 10000;
     
     saveCloud(f1,from,N);
     saveCloud(f2,to,N);
@@ -123,7 +123,7 @@ bool gicpfallback(const PointCloud_RGB& from, const PointCloud_RGB& to, Eigen::M
      */
     fp = popen(cmd, "r");
 
-    vector<string> lines;
+    std::vector<string> lines;
 
     // collect all output
     while ( fgets( line, sizeof line, fp))

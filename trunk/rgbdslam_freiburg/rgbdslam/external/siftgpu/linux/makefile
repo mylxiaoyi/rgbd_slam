@@ -7,8 +7,13 @@ siftgpu_enable_server = 0
 siftgpu_enable_opencl = 0
 #------------------------------------------------------------------------------------------------
 # enable CUDA-based SiftGPU?
-siftgpu_enable_cuda = 1
-CUDA_INSTALL_PATH = /usr/local/cuda
+ifeq (${SIFT_GPU_MODE},1)
+	siftgpu_enable_cuda = 1
+else 
+	siftgpu_enable_cuda = 0
+endif
+CUDA_INSTALL_PATH = ${SIFT_GPU_CUDA_PATH}#/usr/local/cuda
+#CUDA_INSTALL_PATH = /usr/local/cuda
 #change  additional  settings, like SM version here if it is not 1.0 (eg. -arch sm_13 for GTX280)
 #siftgpu_cuda_options = -Xopencc -OPT:unroll_size=200000
 #siftgpu_cuda_options = -arch sm_10
@@ -61,7 +66,7 @@ ifneq ($(siftgpu_enable_opencl), 0)
 	CFLAGS += -DCL_SIFTGPU_ENABLED
 endif
 
-ODIR_SIFTGPU = siftgpu
+ODIR_SIFTGPU = ../../../build/siftgpu
 
 
 # external header files

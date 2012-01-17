@@ -14,95 +14,121 @@
  * along with RGBDSLAM.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-/* registration main:
- * Create 
- * - a Qt Application 
- * - a ROS Node, 
- * - a ROS listener, listening to and processing kinect data
- * - Let them communicate internally via QT Signals
- */
 #include "openni_listener.h"
 #include "qtros.h"
 #include <QApplication>
 #include <QObject>
-#include "qtcv.h"
+#include "qt_gui.h"
 #include <Eigen/Core>
-
 #include "parameter_server.h"
+#include "ros_service_ui.h"
 
 //TODO:
-//try ASIFT
-//File dialog for Saving
-//even better potential-edge-selection through flann
-//subpixel accuracy for feature matches?
-//Performance optimization
-//Get all Parameters from Param server or command line
+//better potential-edge-selection through flann
 //Better separation of function, communication, parameters and gui
 
+///Connect Signals and Slots for the ui control
+void ui_connections(QObject* ui, GraphManager* graph_mgr, OpenNIListener* listener)
+{
+    QObject::connect(ui, SIGNAL(reset()), graph_mgr, SLOT(reset()));
+    QObject::connect(ui, SIGNAL(optimizeGraph()), graph_mgr, SLOT(optimizeGraph()));
+    QObject::connect(ui, SIGNAL(togglePause()), listener, SLOT(togglePause()));
+    QObject::connect(ui, SIGNAL(toggleBagRecording()), listener, SLOT(toggleBagRecording()));
+    QObject::connect(ui, SIGNAL(getOneFrame()), listener, SLOT(getOneFrame()));
+    QObject::connect(ui, SIGNAL(deleteLastFrame()), graph_mgr, SLOT(deleteLastFrame()));
+    QObject::connect(ui, SIGNAL(sendAllClouds()), graph_mgr, SLOT(sendAllClouds()));
+    QObject::connect(ui, SIGNAL(saveAllClouds(QString)), graph_mgr, SLOT(saveAllClouds(QString)));
+    QObject::connect(ui, SIGNAL(saveIndividualClouds(QString)), graph_mgr, SLOT(saveIndividualClouds(QString)));
+    QObject::connect(ui, SIGNAL(setMaxDepth(float)), graph_mgr, SLOT(setMaxDepth(float)));
+    QObject::connect(ui, SIGNAL(saveTrajectory(QString)), graph_mgr, SLOT(saveTrajectory(QString)));
+}
 
+///Connect Signals and Slots only relevant for the graphical interface
+void gui_connections(Graphical_UI* gui, GraphManager* graph_mgr, OpenNIListener* listener)
+{
+    QObject::connect(listener,  SIGNAL(newVisualImage(QImage)), gui, SLOT(setVisualImage(QImage)));
+    QObject::connect(listener,  SIGNAL(newFeatureFlowImage(QImage)), gui, SLOT(setFeatureFlowImage(QImage)));
+    QObject::connect(listener,  SIGNAL(newDepthImage(QImage)), gui, SLOT(setDepthImage(QImage)));
+    QObject::connect(graph_mgr, SIGNAL(sendFinished()), gui, SLOT(sendFinished()));
+    QObject::connect(graph_mgr, SIGNAL(setGUIInfo(QString)), gui, SLOT(setInfo(QString)));
+    QObject::connect(graph_mgr, SIGNAL(setGUIStatus(QString)), gui, SLOT(setStatus(QString)));
+    QObject::connect(gui, SIGNAL(printEdgeErrors(QString)), graph_mgr, SLOT(printEdgeErrors(QString)));
+    QObject::connect(gui, SIGNAL(pruneEdgesWithErrorAbove(float)), graph_mgr, SLOT(pruneEdgesWithErrorAbove(float)));
+    if (ParameterServer::instance()->get<bool>("use_glwidget") && gui->getGLViewer() != NULL) {
+      GLViewer* glv = gui->getGLViewer();
+	    QObject::connect(graph_mgr, SIGNAL(setPointCloud(pointcloud_type *, QMatrix4x4)), glv, SLOT(addPointCloud(pointcloud_type *, QMatrix4x4))); //, Qt::DirectConnection);
+	    QObject::connect(graph_mgr, SIGNAL(setGraphEdges(QList<QPair<int, int> >*)), glv, SLOT(setEdges(QList<QPair<int, int> >*)));
+	    QObject::connect(graph_mgr, SIGNAL(updateTransforms(QList<QMatrix4x4>*)), glv, SLOT(updateTransforms(QList<QMatrix4x4>*)));
+      QObject::connect(graph_mgr, SIGNAL(deleteLastNode()), glv, SLOT(deleteLastNode()));
+	    QObject::connect(graph_mgr, SIGNAL(resetGLViewer()),  glv, SLOT(reset()));
+      if(!ParameterServer::instance()->get<bool>("store_pointclouds")) {
+          QObject::connect(glv, SIGNAL(cloudRendered(pointcloud_type const *)), graph_mgr, SLOT(cloudRendered(pointcloud_type const *))); // 
+      }
+    }
+    QObject::connect(listener, SIGNAL(setGUIInfo(QString)), gui, SLOT(setInfo(QString)));
+    QObject::connect(listener, SIGNAL(setGUIStatus(QString)), gui, SLOT(setStatus(QString)));
+    QObject::connect(graph_mgr, SIGNAL(setGUIInfo2(QString)), gui, SLOT(setInfo2(QString)));
+}
+
+/** On program startup:
+ * Create 
+ * - a Qt Application 
+ * - an Object representing the ROS Node and its callback loop, 
+ * - an OpenNIListener, setting up subscribers and callbacks for various formats of RGBD data
+ * - a GraphManager, getting Nodes constructed from the RGBD data
+ * - A Class providing a service call interface for ROS
+ * - If applicable also a GUI
+ * - let the above communicate internally via QT Signals, where communcication needs to be across threads or if the communication is conditional on the ROS node's parameterization.
+ */
 int main(int argc, char** argv)
 {
-  QApplication application(argc,argv);
+  setlocale(LC_NUMERIC,"C");//Avoid expecting german decimal separators in launch files
+
   //create thread object, to run the ros event processing loop in parallel to the qt loop
-  QtROS qtRos(argc, argv, "rgbdslam"); //ros node name
+  QtROS qtRos(argc, argv, "rgbdslam"); //ros node name & namespace
+
+  //Depending an use_gui on the Parameter Server, a gui- or a headless application is used
+  QApplication app(argc, argv, ParameterServer::instance()->get<bool>("use_gui")); 
+
+  GraphManager graph_mgr(qtRos.getNodeHandle());
+
+  //Instantiate the kinect image listener
+  OpenNIListener listener(qtRos.getNodeHandle(), &graph_mgr);
+  QObject::connect(&listener, SIGNAL(bagFinished()), &qtRos, SLOT(quitNow()));
+
+
+  Graphical_UI* gui = NULL;
+	if (app.type() == QApplication::GuiClient){
+      gui = new Graphical_UI();
+      gui->show();
+      gui_connections(gui, &graph_mgr, &listener);
+      ui_connections(gui, &graph_mgr, &listener);//common connections for the user interfaces
+  } else {
+      ROS_WARN("Running without graphical user interface! See README for how to interact with RGBDSLAM.");
+  }
+  //Create Ros service interface with or without gui
+  RosUi ui("rgbdslam"); //ui namespace for service calls
+  ui_connections(&ui, &graph_mgr, &listener);//common connections for the user interfaces
 
   //If one thread receives a exit signal from the user, signal the other thread to quit too
-  QObject::connect(&application, SIGNAL(aboutToQuit()), &qtRos, SLOT(quitNow()));
-  QObject::connect(&qtRos, SIGNAL(rosQuits()), &application, SLOT(quit()));
+  QObject::connect(&app, SIGNAL(aboutToQuit()), &qtRos, SLOT(quitNow()));
+  QObject::connect(&qtRos, SIGNAL(rosQuits()), &app, SLOT(quit()));
+  QObject::connect(&listener, SIGNAL(bagFinished()), &app, SLOT(quit()));
 
-  UserInterface window;
-  window.show();
-  GraphManager graph_mgr(qtRos.getNodeHandle(), window.getGLViewer());
-  //Instantiate the kinect image listener
-  ParameterServer* params = ParameterServer::instance();
-  OpenNIListener kinect_listener(qtRos.getNodeHandle(), &graph_mgr,
-								 params->get<std::string>("topic_image_mono").c_str(),
-								 params->get<std::string>("topic_image_depth").c_str(),
-								 params->get<std::string>("topic_points").c_str(),
-								 params->get<std::string>("feature_extractor_type").c_str(),
-								 params->get<std::string>("feature_detector_type").c_str());
 
-  //COMMUNICATION BETWEEN COMPONENTS
-  //Route every processed image to the GUI
-  QObject::connect(&kinect_listener, SIGNAL(newVisualImage(QImage)), &window, SLOT(setVisualImage(QImage)));
-  QObject::connect(&kinect_listener, SIGNAL(newFeatureFlowImage(QImage)), &window, SLOT(setFeatureFlowImage(QImage)));
-  QObject::connect(&kinect_listener, SIGNAL(newDepthImage(QImage)), &window, SLOT(setDepthImage(QImage)));
-  QObject::connect(&graph_mgr, SIGNAL(newTransformationMatrix(QString)), &window, SLOT(setTransformation(QString)));
-  QObject::connect(&window, SIGNAL(reset()), &graph_mgr, SLOT(reset()));
-  QObject::connect(&window, SIGNAL(togglePause()), &kinect_listener, SLOT(togglePause()));
-  QObject::connect(&window, SIGNAL(toggleBagRecording()), &kinect_listener, SLOT(toggleBagRecording()));
-  QObject::connect(&window, SIGNAL(getOneFrame()), &kinect_listener, SLOT(getOneFrame()));
-  QObject::connect(&window, SIGNAL(deleteLastFrame()), &graph_mgr, SLOT(deleteLastFrame()));
-  QObject::connect(&window, SIGNAL(sendAllClouds()), &graph_mgr, SLOT(sendAllClouds()));
-  QObject::connect(&window, SIGNAL(saveAllClouds(QString)), &graph_mgr, SLOT(saveAllClouds(QString)));
-  QObject::connect(&window, SIGNAL(saveIndividualClouds(QString)), &graph_mgr, SLOT(saveIndividualClouds(QString)));
-  QObject::connect(&graph_mgr, SIGNAL(sendFinished()), &window, SLOT(sendFinished()));
-  QObject::connect(&graph_mgr, SIGNAL(setGUIInfo(QString)), &window, SLOT(setInfo(QString)));
-  QObject::connect(&graph_mgr, SIGNAL(setGUIStatus(QString)), &window, SLOT(setStatus(QString)));
-  if(params->get<bool>("use_glwidget")){
-    QObject::connect(&graph_mgr, SIGNAL(setPointCloud(pointcloud_type const *, QMatrix4x4)), &window, SLOT(addPointCloud(pointcloud_type const *, QMatrix4x4)));//, Qt::DirectConnection);
-    QObject::connect(&graph_mgr, SIGNAL(updateTransforms(QList<QMatrix4x4>*)), &window, SLOT(updateTransforms(QList<QMatrix4x4>*)));
-    QObject::connect(&graph_mgr, SIGNAL(setGraphEdges(QList<QPair<int, int> >*)), &window, SLOT(setGraphEdges(QList<QPair<int, int> >*)));
-  }
-  QObject::connect(&kinect_listener, SIGNAL(setGUIInfo(QString)), &window, SLOT(setInfo(QString)));
-  QObject::connect(&kinect_listener, SIGNAL(setGUIStatus(QString)), &window, SLOT(setStatus(QString)));
-  QObject::connect(&graph_mgr, SIGNAL(setGUIInfo2(QString)), &window, SLOT(setInfo2(QString)));
-  QObject::connect(&window, SIGNAL(setMaxDepth(float)), &graph_mgr, SLOT(setMaxDepth(float)));
-  QObject::connect(&graph_mgr, SIGNAL(deleteLastNode()), &window, SLOT(deleteLastNode()));
 
-  // Run main loop.
-  qtRos.start();
 #ifdef USE_ICP_BIN
-  ROS_INFO("ICP activated via external binary");
+  ROS_INFO_COND(ParameterServer::instance()->get<bool>("use_icp"), "ICP activated via external binary");
 #endif
-#ifdef USE_ICP_CODE      
-  ROS_INFO("ICP activated via linked library");
+#ifdef USE_ICP_CODE
+  ROS_INFO_COND(ParameterServer::instance()->get<bool>("use_icp"), "ICP activated via linked library");
 #endif
-  application.exec();
-  if(ros::ok()) {
-    ros::shutdown();//If not yet done through the qt connection
-  }
+
+  qtRos.start();// Run main loop.
+  app.exec();
+  if(ros::ok()) ros::shutdown();//If not yet done through the qt connection
   ros::waitForShutdown(); //not sure if necessary. 
+  //delete gui;
 }
 
 

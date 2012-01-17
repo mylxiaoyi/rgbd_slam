@@ -15,13 +15,12 @@
  */
 
 
-#include <hogman_minimal/stuff/macros.h>
-#include <hogman_minimal/math/transformation.h>
 #include <sys/time.h>
 #include <visualization_msgs/Marker.h>
 #include <geometry_msgs/Point.h>
 //#include <rgbdslam/CloudTransforms.h>
 #include "graph_manager.h"
+#include "misc.h"
 #include "pcl_ros/transforms.h"
 #include "pcl/io/pcd_io.h"
 #include <sensor_msgs/PointCloud2.h>
@@ -31,113 +30,125 @@
 #include <QtConcurrentMap> 
 #include <QFile>
 #include <utility>
+#include <fstream>
+#include <limits>
+
+#include "g2o/math_groups/se3quat.h"
+#include "g2o/types/slam3d/edge_se3_quat.h"
+
+#include "g2o/core/block_solver.h"
+#include "g2o/solvers/csparse/linear_solver_csparse.h"
+#include "g2o/solvers/cholmod/linear_solver_cholmod.h"
+//#include "g2o/solvers/pcg/linear_solver_pcg.h"
+
+//typedef g2o::BlockSolver< g2o::BlockSolverTraits<-1, -1> >  SlamBlockSolver;
+typedef g2o::BlockSolver< g2o::BlockSolverTraits<6, 3> >  SlamBlockSolver;
+typedef g2o::LinearSolverCSparse<SlamBlockSolver::PoseMatrixType> SlamLinearSolver;
+typedef g2o::LinearSolverCholmod<SlamBlockSolver::PoseMatrixType> SlamLinearCholmodSolver;
+//typedef g2o::LinearSolverPCG<SlamBlockSolver::PoseMatrixType> SlamLinearPCGSolver;
+//typedef std::map<int, g2o::VertexSE3*> VertexIDMap;
+typedef std::tr1::unordered_map<int, g2o::HyperGraph::Vertex*>     VertexIDMap;
+//std::tr1::unordered_map<int, g2o::HyperGraph::Vertex* >
+typedef std::set<g2o::HyperGraph::Edge*> EdgeSet;
 
 
-
-QMatrix4x4 hogman2QMatrix(const Transformation3 hogman_trans) {
-    std::clock_t starttime=std::clock();
-    _Matrix< 4, 4, double > m = hogman_trans.toMatrix(); //_Matrix< 4, 4, double >
-    QMatrix4x4 qmat( static_cast<qreal*>( m[0] )  );
-    return qmat;
-    ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "function runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
-}
-
-Eigen::Matrix4d hogman2Eigen(const Transformation3 hogman_trans) {
-    std::clock_t starttime=std::clock();
-    _Matrix< 4, 4, double > mat = hogman_trans.toMatrix(); //_Matrix< 4, 4, double >
-    QMatrix4x4 m( static_cast<qreal*>( mat[0] )  );
-    Eigen::Matrix4d result;
-    result << m(0,0), m(0,1),m(0,2),m(0,3),
-              m(1,0), m(1,1),m(1,2),m(1,3),
-              m(2,0), m(2,1),m(2,2),m(2,3),
-              m(3,0), m(3,1),m(3,2),m(3,3);
-    return result;
-    ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
-}
-
-tf::Transform hogman2TF(const Transformation3 hogman_trans) {
-    std::clock_t starttime=std::clock();
-
-    tf::Transform result;
-    tf::Vector3 translation;
-    translation.setX(hogman_trans.translation().x());
-    translation.setY(hogman_trans.translation().y());
-    translation.setZ(hogman_trans.translation().z());
-
-    tf::Quaternion rotation;
-    rotation.setX(hogman_trans.rotation().x());
-    rotation.setY(hogman_trans.rotation().y());
-    rotation.setZ(hogman_trans.rotation().z());
-    rotation.setW(hogman_trans.rotation().w());
-
-    result.setOrigin(translation);
-    result.setRotation(rotation);
-    return result;
-
-    ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "function runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
-
-}
-
-void printTransform(const char* name, const tf::Transform t) {
-    ROS_DEBUG_STREAM(name << ": Translation " << t.getOrigin().x() << " " << t.getOrigin().y() << " " << t.getOrigin().z());
-    ROS_DEBUG_STREAM(name << ": Rotation " << t.getRotation().getX() << " " << t.getRotation().getY() << " " << t.getRotation().getZ() << " " << t.getRotation().getW());
-}
-
-
-GraphManager::GraphManager(ros::NodeHandle nh, GLViewer* glviewer) :
-    freshlyOptimized_(true), //the empty graph is "optimized" i.e., sendable
-    glviewer_(glviewer),
-    time_of_last_transform_(ros::Time()),
+GraphManager::GraphManager(ros::NodeHandle nh) :
     optimizer_(0), 
     latest_transform_(), //constructs identity
     reset_request_(false),
-    last_batch_update_(std::clock()),
     marker_id(0),
     last_matching_node_(-1),
-    batch_processing_runs_(false)
+    batch_processing_runs_(false),
+    process_node_runs_(false),
+    someone_is_waiting_for_me_(false)
 {
-    std::clock_t starttime=std::clock();
+  struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
 
-    int numLevels = 3;
-    int nodeDistance = 2;
-    optimizer_ = new AIS::HCholOptimizer3D(numLevels, nodeDistance);
-    marker_pub_ = nh.advertise<visualization_msgs::Marker>("/rgbdslam/pose_graph_markers", 1);
-    kinect_transform_.setRotation(tf::Quaternion::getIdentity());//TODO: initialize transloation too
-    timer_ = nh.createTimer(ros::Duration(0.1), &GraphManager::broadcastTransform, this);
+  // allocating the optimizer
+  optimizer_ = new g2o::SparseOptimizer();
+  optimizer_->setVerbose(true);
+  //SlamLinearSolver* linearSolver = new SlamLinearSolver();
+  SlamLinearCholmodSolver* linearSolver = new SlamLinearCholmodSolver();
+  //SlamLinearPCGSolver* linearSolver = new SlamLinearPCGSolver();
+  linearSolver->setBlockOrdering(false);
+  SlamBlockSolver* solver = new SlamBlockSolver(optimizer_, linearSolver);
+  optimizer_->setSolver(solver);
 
-    ransac_marker_pub_ = nh.advertise<visualization_msgs::Marker>("/rgbdslam/correspondence_marker", 10);
-    aggregate_cloud_pub_ = nh.advertise<sensor_msgs::PointCloud2>("/rgbdslam/aggregate_clouds",20);
+  //optimizer_ = new AIS::HCholOptimizer3D(numLevels, nodeDistance);
+  ParameterServer* ps = ParameterServer::instance();
+  batch_cloud_pub_ = nh.advertise<sensor_msgs::PointCloud2>(ps->get<std::string>("individual_cloud_out_topic"),
+                                                            ps->get<int>("publisher_queue_size"));
+  whole_cloud_pub_ = nh.advertise<sensor_msgs::PointCloud2>(ps->get<std::string>("aggregate_cloud_out_topic"),
+                                                            ps->get<int>("publisher_queue_size"));
+  ransac_marker_pub_ = nh.advertise<visualization_msgs::Marker>("/rgbdslam/correspondence_marker", 
+                                                                ps->get<int>("publisher_queue_size"));
+  marker_pub_ = nh.advertise<visualization_msgs::Marker>("/rgbdslam/pose_graph_markers",
+                                                         ps->get<int>("publisher_queue_size"));
+  computed_motion_ = tf::Transform::getIdentity();
+  init_base_pose_  = tf::Transform::getIdentity();
+  base2points_     = tf::Transform::getIdentity();
+  timer_ = nh.createTimer(ros::Duration(0.1), &GraphManager::broadcastTransform, this);
 
-    Max_Depth = -1;
+  Max_Depth = -1;
 
-    ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "function runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
+  clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
+}
+
+
+//WARNING: Dangerous
+void GraphManager::deleteFeatureInformation() {
+  ROS_WARN("Clearing out Feature information from nodes");
+  for (unsigned int i = 0; i < graph_.size(); ++i) {
+    graph_[i]->clearFeatureInformation();
+  }
 }
 
 GraphManager::~GraphManager() {
   //TODO: delete all Nodes
     //for (unsigned int i = 0; i < optimizer_->vertices().size(); ++i) {
+    for (unsigned int i = 0; i < graph_.size(); ++i) {
+      Node* to_delete = graph_[i];
+      delete to_delete;
+    }
+    graph_.clear();
     delete (optimizer_);
+    ransac_marker_pub_.shutdown();
+    whole_cloud_pub_.shutdown();
+    marker_pub_.shutdown();
+    batch_cloud_pub_.shutdown();
+
 }
 
 void GraphManager::drawFeatureFlow(cv::Mat& canvas, cv::Scalar line_color,
                                    cv::Scalar circle_color){
-    std::clock_t starttime=std::clock();
+    struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
+    if(!ParameterServer::instance()->get<bool>("use_gui")){ return; }
     ROS_DEBUG("Number of features to draw: %d", (int)last_inlier_matches_.size());
 
     const double pi_fourth = 3.14159265358979323846 / 4.0;
     const int line_thickness = 1;
     const int circle_radius = 6;
+    const int CV_AA = 16;
     if(graph_.size() == 0) {
       ROS_WARN("Feature Flow for empty graph requested. Bug?");
       return;
-    } else if(graph_.size() == 1) {//feature flow is only available between at least two nodes
+    } else if(graph_.size() == 1 || last_matching_node_ == -1 ) {//feature flow is only available between at least two nodes
       Node* newernode = graph_[graph_.size()-1];
       cv::drawKeypoints(canvas, newernode->feature_locations_2d_, canvas, cv::Scalar(255), 5);
       return;
     } 
 
-    Node* earliernode = graph_[graph_.size()-2];//graph_.size()-2; //compare current to previous
+    Node* earliernode = graph_[last_matching_node_];//graph_.size()-2; //compare current to previous
     Node* newernode = graph_[graph_.size()-1];
+    if(earliernode == NULL){
+      if(newernode == NULL ){ ROS_ERROR("Nullpointer for Node %u", (unsigned int)graph_.size()-1); }
+      ROS_ERROR("Nullpointer for Node %d", last_matching_node_);
+      last_matching_node_ = 0;
+      return;
+    } else if(newernode == NULL ){
+      ROS_ERROR("Nullpointer for Node %u", (unsigned int)graph_.size()-1);
+      return;
+    }
 
     //encircle all keypoints in this image
     //for(unsigned int feat = 0; feat < newernode->feature_locations_2d_.size(); feat++) {
@@ -145,8 +156,8 @@ void GraphManager::drawFeatureFlow(cv::Mat& canvas, cv::Scalar line_color,
     //    p = newernode->feature_locations_2d_[feat].pt;
     //    cv::circle(canvas, p, circle_radius, circle_color, line_thickness, 8);
     //}
-    cv::Mat tmpimage = cv::Mat::zeros(canvas.rows, canvas.cols, CV_8UC1);
-    cv::drawKeypoints(canvas, newernode->feature_locations_2d_, tmpimage, cv::Scalar(155), 5);
+    cv::Mat tmpimage = cv::Mat::zeros(canvas.rows, canvas.cols, canvas.type());
+    cv::drawKeypoints(canvas, newernode->feature_locations_2d_, tmpimage, circle_color, 5);
     canvas+=tmpimage;
     for(unsigned int mtch = 0; mtch < last_inlier_matches_.size(); mtch++) {
         cv::Point2f p,q; //TODO: Use sub-pixel-accuracy
@@ -157,105 +168,192 @@ void GraphManager::drawFeatureFlow(cv::Mat& canvas, cv::Scalar line_color,
 
         double angle;    angle = atan2( (double) p.y - q.y, (double) p.x - q.x );
         double hypotenuse = cv::norm(p-q);
-            cv::line(canvas, p, q, line_color, line_thickness, 8);
+            cv::line(canvas, p, q, line_color, line_thickness, CV_AA);
         if(hypotenuse > 1.5){  //only larger motions larger than one pix get an arrow tip
-            cv::line( canvas, p, q, line_color, line_thickness, 8 );
+            cv::line( canvas, p, q, line_color, line_thickness, CV_AA );
             /* Now draw the tips of the arrow.  */
             p.x =  (q.x + 4 * cos(angle + pi_fourth));
             p.y =  (q.y + 4 * sin(angle + pi_fourth));
-            cv::line( canvas, p, q, line_color, line_thickness, 8 );
+            cv::line( canvas, p, q, line_color, line_thickness, CV_AA );
             p.x =  (q.x + 4 * cos(angle - pi_fourth));
             p.y =  (q.y + 4 * sin(angle - pi_fourth));
-            cv::line( canvas, p, q, line_color, line_thickness, 8 );
+            cv::line( canvas, p, q, line_color, line_thickness, CV_AA );
         } else { //draw a smaller circle into the bigger one 
-            cv::circle(canvas, p, circle_radius-2, circle_color, line_thickness, 8);
+            cv::circle(canvas, p, circle_radius-2, circle_color, line_thickness, CV_AA);
         }
     }
-    ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "function runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
 }
 
 
-/// max_targets determines how many potential edges are wanted
-/// max_targets < 0: No limit
-/// max_targets = 0: Compare to first frame only
-/// max_targets = 1: Compare to previous frame only
-/// max_targets > 1: Select intelligently (TODO: rather stupid at the moment)
-std::vector<int> GraphManager::getPotentialEdgeTargets(const Node* new_node, int max_targets){
-    const int last_targets = 3; //always compare to the last n, spread evenly for the rest
-    double max_id_plus1 = (double)graph_.size()- last_targets;
-    max_targets -= last_targets;
-    std::vector<int> ids_to_link_to;
+QList<int> GraphManager::getPotentialEdgeTargetsWithDijkstra(const Node* new_node, int sequential_targets, int geodesic_targets, int sampled_targets)
+{
+    QList<int> ids_to_link_to; //return value
+    //output only loop
     std::stringstream ss;
-    ss << "Node ID's for comparison with the new node " << graph_.size() << ":";
-    //Special Cases
-    if(graph_.size() == 0){
-        ROS_WARN("Do not call this function as long as the graph is empty");
-        return ids_to_link_to;
-    }
-    for(int i = 2; i <= (int)graph_.size() && i <= last_targets; i++){
-        ss << "(" << graph_.size()-i << "), " ; 
-        ids_to_link_to.push_back(graph_.size()-i);
-    }
-    if(max_targets < 0) 
-        return ids_to_link_to;
-    if(max_targets == 0){
-        ids_to_link_to.push_back(0);
-        return ids_to_link_to; //only compare to first frame
-    } else if(max_targets == 1){
-        ids_to_link_to.push_back(graph_.size()-2); 
-        return ids_to_link_to; //only compare to previous frame
-    } 
-    
-    //End special cases
-    /*
-    if(max_targets >= 10){ //compare to last 5, then split up evenly among the rest
-        for(unsigned int i = graph_.size(); i > graph_.size() -5; i--){
-          ids_to_link_to.push_back(i); 
-          max_targets--;
-          max_id_plus1--;
-        }
-    } 
-    */
+    ss << "Node ID's to compare with candidate for node " << graph_.size() << ". Sequential: ";
 
-    double id = 0.0; //always start with the first
-    double increment = max_id_plus1/(double)(max_targets);//max_targets-1 = intermediate steps
-    increment = increment < 1.0 ? 1.0 : increment; //smaller steps would select some id's twice
-    ROS_DEBUG("preparing loop %f %f", id, increment);
-    while((int)id < (int)max_id_plus1){
-        ss << "(" << id << "/" << (int)id << ")," ; 
-        ids_to_link_to.push_back((int)id); //implicit rounding
-        id += increment;
+    if((int)optimizer_->vertices().size() <= sequential_targets+geodesic_targets+sampled_targets ||
+       optimizer_->vertices().size() <= 1)
+    { //if less prev nodes available than targets requestet, just use all
+      sequential_targets = sequential_targets+geodesic_targets+sampled_targets;
+      geodesic_targets = 0;
+      sampled_targets = 0;
     }
-    ROS_DEBUG("%s", ss.str().c_str());
-//    while((id+0.5) < max_id_plus1){ //Split up evenly
-//        ids_to_link_to.push_back((int)(id+0.5)); //implicit rounding
-//        id += (max_id_plus1/(double)max_targets);
-//    }
+    if(sequential_targets > 0){
+      //all the sequential targets (will be checked last)
+      for (int i=2; i < sequential_targets+2 && ((int)graph_.size())-i >= 0; i++) { 
+          ids_to_link_to.push_back(graph_.size()-i); 
+          ss << ids_to_link_to.back() << ", " ; 
+      }
+    }
+
+    if(geodesic_targets > 0){
+      g2o::HyperDijkstra hypdij(optimizer_);
+      g2o::UniformCostFunction cost_function;
+      g2o::VertexSE3* prev_vertex = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(graph_.size()-1));
+      hypdij.shortestPaths(prev_vertex,&cost_function,3);
+      g2o::HyperGraph::VertexSet& vs = hypdij.visited();
+
+
+      //Geodesic Neighbours except sequential
+      std::map<int,int> neighbour_indices; //maps neighbour ids to their weights in sampling
+      int sum_of_weights=0;
+      for (g2o::HyperGraph::VertexSet::iterator vit=vs.begin(); vit!=vs.end(); vit++) {
+        int id = (*vit)->id();
+        if(id < (int)graph_.size()-1-geodesic_targets){ //if neighbour is potential target, add it to neighbour_indices, delete it from non_neighbour_indices
+            int weight = graph_.size()-id;
+            neighbour_indices[id] = weight; //higher probability to be drawn if far away
+            sum_of_weights += weight;
+        }
+      }
+
+      //Sample targets from graph-neighbours
+      ss << "Dijkstra: ";
+      while(ids_to_link_to.size() < sampled_targets+geodesic_targets && neighbour_indices.size() != 0){ 
+        int random_pick = rand() % sum_of_weights;
+        ROS_DEBUG("Pick: %d/%d", random_pick, sum_of_weights);
+        int weight_so_far = 0;
+        for(std::map<int,int>::iterator map_it = neighbour_indices.begin(); map_it != neighbour_indices.end(); map_it++ ){
+          weight_so_far += map_it->second;
+          ROS_DEBUG("Checking: %d, %d, %d", map_it->first, map_it-> second, weight_so_far);
+          if(weight_so_far > random_pick){//found the selected one
+            int sampled_id = map_it->first;
+            ids_to_link_to.push_front(sampled_id);
+            ss << ids_to_link_to.front() << ", " ; 
+            sum_of_weights -= map_it->second;
+            ROS_DEBUG("Taking ID: %d, decreasing sum of weights to %d", map_it->first, sum_of_weights);
+            neighbour_indices.erase(map_it);
+            ROS_ERROR_COND(sum_of_weights<0, "Sum of weights should never be zero");
+            break;
+          }
+          ROS_DEBUG("Skipping ID: %d", map_it->first);
+        }//for
+      }
+    }
+    
+    if(sampled_targets > 0){
+      ss << "Random Sampling: ";
+      std::vector<int> non_neighbour_indices;//initially holds all, then neighbours are deleted
+      non_neighbour_indices.reserve(graph_.size());
+      for (QList<int>::iterator it = keyframe_ids_.begin(); it != keyframe_ids_.end(); it++){
+        if(ids_to_link_to.contains(*it) == 0){
+          non_neighbour_indices.push_back(*it); 
+        }
+      }
+
+      //Sample targets from non-neighbours (search new loops)
+      while(ids_to_link_to.size() < geodesic_targets+sampled_targets+sampled_targets && non_neighbour_indices.size() != 0){ 
+          int index_of_v_id = rand() % non_neighbour_indices.size();
+          int sampled_id = non_neighbour_indices[index_of_v_id];
+          non_neighbour_indices[index_of_v_id] = non_neighbour_indices.back(); //copy last id to position of the used id
+          non_neighbour_indices.resize(non_neighbour_indices.size()-1); //drop last id
+          ids_to_link_to.push_front(sampled_id);
+          ss << ids_to_link_to.front() << ", " ; 
+      }
+    }
+
+    ROS_INFO("%s", ss.str().c_str());
+    return ids_to_link_to; //only compare to first frame
+}
+
+QList<int> GraphManager::getPotentialEdgeTargets(const Node* new_node, int last_targets, int sample_targets)
+{
+    int gsize = graph_.size();
+    ROS_ERROR_COND(gsize == 0, "Do not call this function as long as the graph is empty");
+    QList<int> ids_to_link_to; //return value
+
+    //Special Cases of max_targets argument
+    if(last_targets + sample_targets <= 0) {        //Negative: No comparisons
+        return ids_to_link_to;
+    }
+
+    //All the last few nodes
+    if(gsize <= sample_targets+last_targets){
+      last_targets = gsize;//Can't compare to more nodes than exist
+      sample_targets = 0;
+    }
+    for(int i = 2; i <= gsize && i <= last_targets; i++){//start at two, b/c the prev node is always already checked in addNode
+        ids_to_link_to.push_back(gsize-i);
+    }
+
+
+    while(ids_to_link_to.size() < sample_targets+last_targets && ids_to_link_to.size() < gsize-1){ 
+        int sample_id = rand() % (gsize - 1);
+        ROS_DEBUG_STREAM("Sample: " << sample_id << " Graph size: " << gsize << " ids_to_link_to.size: " << ids_to_link_to.size());
+        QList<int>::const_iterator i1 = qFind(ids_to_link_to, sample_id);
+        if(i1 != ids_to_link_to.end()) 
+          continue;
+        ids_to_link_to.push_back(sample_id);
+    }
+
+
+    //output only loop
+    std::stringstream ss;
+    ss << "Node ID's to compare with candidate for node " << graph_.size() << ":";
+    for(int i = 0; i < (int)ids_to_link_to.size(); i++){
+        ss << ids_to_link_to[i] << ", " ; 
+    }
+    ROS_INFO("%s", ss.str().c_str());
     return ids_to_link_to;
 }
 
 void GraphManager::resetGraph(){
-    int numLevels = 3;
-    int nodeDistance = 2;
     marker_id =0;
-    time_of_last_transform_= ros::Time();
-    last_batch_update_=std::clock();
     delete optimizer_; 
-    optimizer_ = new AIS::HCholOptimizer3D(numLevels, nodeDistance);
-    graph_.clear();//TODO: also delete the nodes
-    freshlyOptimized_= false;
+    // allocating the optimizer
+    optimizer_ = new g2o::SparseOptimizer();
+    //SlamLinearSolver* linearSolver = new SlamLinearSolver();
+    SlamLinearCholmodSolver* linearSolver = new SlamLinearCholmodSolver();
+    linearSolver->setBlockOrdering(false);
+    SlamBlockSolver* solver = new SlamBlockSolver(optimizer_, linearSolver);
+    optimizer_->setSolver(solver);
+
+    for(unsigned int i = 0; i < graph_.size(); delete graph_[i++]);//No body
+    graph_.clear();
+    keyframe_ids_.clear();
+    Q_EMIT resetGLViewer();
+    last_matching_node_ = -1;
+    latest_transform_.setToIdentity();
+    current_poses_.clear();
+    current_edges_.clear();
     reset_request_ = false;
+
 }
 
 // returns true, iff node could be added to the cloud
 bool GraphManager::addNode(Node* new_node) {
-    std::clock_t starttime=std::clock();
+    /// \callergraph
+    struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
+    process_node_runs_ = true;
 
     last_inlier_matches_.clear();
     if(reset_request_) resetGraph(); 
-
-    if (new_node->feature_locations_2d_.size() <= 50){
+    ParameterServer* ps = ParameterServer::instance();
+    if ((int)new_node->feature_locations_2d_.size() < ps->get<int>("min_matches") && 
+        ! ps->get<bool>("keep_all_nodes")){
         ROS_DEBUG("found only %i features on image, node is not included",(int)new_node->feature_locations_2d_.size());
+        process_node_runs_ = false;
         return false;
     }
 
@@ -267,18 +365,34 @@ bool GraphManager::addNode(Node* new_node) {
     //First Node, so only build its index, insert into storage and add a
     //vertex at the origin, of which the position is very certain
     if (graph_.size()==0){
+        init_base_pose_ =  new_node->getGroundTruthTransform();//identity if no MoCap available
+        printTransform("Ground Truth Transform for First Node", init_base_pose_);
         new_node->buildFlannIndex(); // create index so that next nodes can use it
         graph_[new_node->id_] = new_node;
-        optimizer_->addVertex(0, Transformation3(), 1e9*Matrix6::eye(1.0)); //fix at origin
+        g2o::VertexSE3* reference_pose = new g2o::VertexSE3;
+        reference_pose->setId(0);
+        g2o::SE3Quat g2o_ref_se3 = tf2G2O(init_base_pose_);
+        reference_pose->setEstimate(g2o_ref_se3);
+        reference_pose->setFixed(true);//fix at origin
+        optimizer_mutex.lock();
+        optimizer_->addVertex(reference_pose); 
+        optimizer_mutex.unlock();
         QString message;
         Q_EMIT setGUIInfo(message.sprintf("Added first node with %i keypoints to the graph", (int)new_node->feature_locations_2d_.size()));
-        pointcloud_type const * the_pc(&(new_node->pc_col));
-        Q_EMIT setPointCloud(the_pc, latest_transform_);
+        //pointcloud_type::Ptr the_pc(new_node->pc_col); //this would delete the cloud after the_pc gets out of scope
+        latest_transform_ = g2o2QMatrix(g2o_ref_se3);
+        printQMatrix4x4("Latest Transform", latest_transform_);
+        Q_EMIT setPointCloud(new_node->pc_col.get(), latest_transform_);
+        current_poses_.append(latest_transform_);
         ROS_DEBUG("GraphManager is thread %d, New Node is at (%p, %p)", (unsigned int)QThread::currentThreadId(), new_node, graph_[0]);
+        keyframe_ids_.push_back(0);
+        process_node_runs_ = false;
         return true;
     }
 
+
     unsigned int num_edges_before = optimizer_->edges().size(); 
+    bool edge_to_keyframe = false;
 
     ROS_DEBUG("Graphsize: %d", (int) graph_.size());
     marker_id = 0; //overdraw old markers
@@ -288,124 +402,193 @@ bool GraphManager::addNode(Node* new_node) {
     //MAIN LOOP: Compare node pairs ######################################################################
     //First check if trafo to last frame is big
     Node* prev_frame = graph_[graph_.size()-1];
-    ROS_INFO("Comparing new node (%i) with previous node %i / %i", new_node->id_, (int)graph_.size()-1, prev_frame->id_);
+    ROS_INFO("Comparing new node (%i) with previous node %i", new_node->id_, prev_frame->id_);
     MatchingResult mr = new_node->matchNodePair(prev_frame);
     if(mr.edge.id1 >= 0 && !isBigTrafo(mr.edge.mean)){
         ROS_WARN("Transformation not relevant. Did not add as Node");
+        process_node_runs_ = false;
         return false;
     } else if(mr.edge.id1 >= 0){
-        if (addEdgeToHogman(mr.edge, true)) {
+
+        //mr.edge.informationMatrix *= geodesicDiscount(hypdij, mr); 
+        ROS_DEBUG_STREAM("Information Matrix for Edge (" << mr.edge.id1 << "<->" << mr.edge.id2 << "\n" << mr.edge.informationMatrix);
+
+        if (addEdgeToG2O(mr.edge, true, true)) {
+            if(keyframe_ids_.contains(mr.edge.id1)) edge_to_keyframe = true;
             ROS_INFO("Added Edge between %i and %i. Inliers: %i",mr.edge.id1,mr.edge.id2,(int) mr.inlier_matches.size());
             last_matching_node_ = mr.edge.id1;
             last_inlier_matches_ = mr.inlier_matches;
             last_matches_ = mr.all_matches;
+            edge_to_previous_node_ = mr.edge.mean;
+
+        } else {
+          process_node_runs_ = false;
+          return false;
         }
     }
     //Eigen::Matrix4f ransac_trafo, final_trafo;
-    std::vector<int> vertices_to_comp = getPotentialEdgeTargets(new_node, ParameterServer::instance()->get<int>("connectivity")); //vernetzungsgrad
+    QList<int> vertices_to_comp;
+    int  seq_cand = ps->get<int>("predecessor_candidates");
+    int geod_cand = ps->get<int>("neighbor_candidates");
+    int samp_cand = ps->get<int>("min_sampled_candidates");
+    //if(ps->get<std::string>("matching_candidates") == "geodesic+sampling"){
+        vertices_to_comp = getPotentialEdgeTargetsWithDijkstra(new_node, seq_cand, geod_cand, samp_cand); 
+    //} else {
+        //vertices_to_comp = getPotentialEdgeTargets(new_node, seq_cand, samp_cand); 
+    //}
     QList<const Node* > nodes_to_comp;//only necessary for parallel computation
-    for (int id_of_id = (int)vertices_to_comp.size()-1; id_of_id >=0;id_of_id--){ 
 
-#ifndef CONCURRENT_EDGE_COMPUTATION
-#define QT_NO_CONCURRENT
-#endif
-#ifndef QT_NO_CONCURRENT
-        //First compile a qlist of the nodes to be compared, then run the comparisons in parallel, 
-        //collecting a qlist of the results (using the blocking version of mapped).
-        nodes_to_comp.push_back(graph_[vertices_to_comp[id_of_id]]);
-    }
-    ROS_DEBUG("Running node comparisons in parallel");
-    QList<MatchingResult> results = QtConcurrent::blockingMapped(nodes_to_comp, 
-                                                                 boost::bind(&Node::matchNodePair, new_node, _1));
-    for(int i = 0; i <  results.size(); i++){
-        MatchingResult& mr = results[i];
-#else
-        Node* abcd = graph_[vertices_to_comp[id_of_id]];
-        ROS_INFO("Comparing new node (%i) with node %i / %i", new_node->id_, vertices_to_comp[id_of_id], abcd->id_);
-        MatchingResult mr = new_node->matchNodePair(abcd);
-#endif
-        if(mr.edge.id1 >= 0){
-            if (addEdgeToHogman(mr.edge, isBigTrafo(mr.edge.mean))) { //TODO: result isBigTrafo is not considered
-                ROS_INFO("Added Edge between %i and %i. Inliers: %i",mr.edge.id1,mr.edge.id2,(int) mr.inlier_matches.size());
-                //last_matching_node_ = mr.edge.id1;
-                //last_inlier_matches_ = mr.inlier_matches;
-                //last_matches_ = mr.all_matches;
+    if (ps->get<bool>("concurrent_edge_construction")) {
+        for (int id_of_id = (int) vertices_to_comp.size() - 1; id_of_id >= 0; id_of_id--) {
+            //First compile a qlist of the nodes to be compared, then run the comparisons in parallel,
+            //collecting a qlist of the results (using the blocking version of mapped).
+            nodes_to_comp.push_front(graph_[vertices_to_comp[id_of_id]]); 
+        }
+        QThreadPool* qtp = QThreadPool::globalInstance();
+        ROS_INFO("Running node comparisons in parallel in %i (of %i) available threads", qtp->maxThreadCount() - qtp->activeThreadCount(), qtp->maxThreadCount());
+        if (qtp->maxThreadCount() - qtp->activeThreadCount() == 1) {
+            ROS_WARN("Few Threads Remaining: Increasing maxThreadCount to %i", qtp->maxThreadCount()+1);
+            qtp->setMaxThreadCount(qtp->maxThreadCount() + 1);
+        }
+        QList<MatchingResult> results = QtConcurrent::blockingMapped(nodes_to_comp, boost::bind(&Node::matchNodePair, new_node, _1));
+
+        /*
+        while(!result_future.isFinished()){
+          if(result_future.resultCount() > geod_cand+samp_cand && someone_is_waiting_for_me_){
+            result_future.cancel();
+            result_future.waitForFinished();//no dangling comparison that clash with the next node's comparison
+            ROS_INFO("Enough comparisons");
+            break;
+          }
+        }
+        QList<MatchingResult> results = result_future.results();
+        */
+
+        for (int i = 0; i < results.size(); i++) {
+            MatchingResult& mr = results[i];
+
+            if (mr.edge.id1 >= 0) {
+                //mr.edge.informationMatrix *= geodesicDiscount(hypdij, mr);
+                ROS_INFO_STREAM("Information Matrix for Edge (" << mr.edge.id1 << "<->" << mr.edge.id2 << "\n" << mr.edge.informationMatrix);
+
+                if (addEdgeToG2O(mr.edge, isBigTrafo(mr.edge.mean), mr.inlier_matches.size() > last_inlier_matches_.size())) 
+                { 
+                    ROS_INFO("Added Edge between %i and %i. Inliers: %i",mr.edge.id1,mr.edge.id2,(int) mr.inlier_matches.size());
+                    if (mr.inlier_matches.size() > last_inlier_matches_.size()) {
+                        last_matching_node_ = mr.edge.id1;
+                        last_inlier_matches_ = mr.inlier_matches;
+                        last_matches_ = mr.all_matches;
+                        //last_edge_ = mr.edge.mean;
+                    }
+                    if(keyframe_ids_.contains(mr.edge.id1)) edge_to_keyframe = true;
+                }
+            }
+        }
+    } else {
+        for (int id_of_id = (int) vertices_to_comp.size() - 1; id_of_id >= 0; id_of_id--) {
+            Node* abcd = graph_[vertices_to_comp[id_of_id]];
+            ROS_INFO("Comparing new node (%i) with node %i / %i", new_node->id_, vertices_to_comp[id_of_id], abcd->id_);
+            MatchingResult mr = new_node->matchNodePair(abcd);
+
+            if (mr.edge.id1 >= 0) {
+                //mr.edge.informationMatrix *= geodesicDiscount(hypdij, mr);
+                ROS_INFO_STREAM("Information Matrix for Edge (" << mr.edge.id1 << "<->" << mr.edge.id2 << "\n" << mr.edge.informationMatrix);
+
+                if (addEdgeToG2O(mr.edge, isBigTrafo(mr.edge.mean), mr.inlier_matches.size() > last_inlier_matches_.size())) 
+                {
+                    ROS_INFO("Added Edge between %i and %i. Inliers: %i",mr.edge.id1,mr.edge.id2,(int) mr.inlier_matches.size());
+                    if (mr.inlier_matches.size() > last_inlier_matches_.size()) {
+                        last_matching_node_ = mr.edge.id1;
+                        last_inlier_matches_ = mr.inlier_matches;
+                        last_matches_ = mr.all_matches;
+                        //last_edge_ = mr.edge.mean;
+                    }
+                    if(keyframe_ids_.contains(mr.edge.id1)) edge_to_keyframe = true;
+                }
             }
         }
     }
+
     //END OF MAIN LOOP: Compare node pairs ######################################################################
+    bool found_trafo = true;
+    if(ps->get<bool>("keep_all_nodes")){
+      if (optimizer_->edges().size() == num_edges_before) { //Failure: Create Bogus edge
+        found_trafo = false;
+        ROS_WARN("Node %u could not be matched. Adding with no motion assumption", (unsigned int)graph_.size());
+        LoadedEdge3D virtual_edge;
+        virtual_edge.id1 = graph_.size()-1;
+        virtual_edge.id2 = graph_.size();
+        virtual_edge.mean = g2o::SE3Quat();
+        latest_transform_ = g2o2QMatrix(edge_to_previous_node_);
+        last_matching_node_ = virtual_edge.id1;
+        virtual_edge.informationMatrix = Eigen::Matrix<double,6,6>::Identity();//*(1e-6); 
+        addEdgeToG2O(virtual_edge, true,true) ;
+      }
+    }
+      
+
 
     if (optimizer_->edges().size() > num_edges_before) { //Success
         new_node->buildFlannIndex();
         graph_[new_node->id_] = new_node;
+        if(!edge_to_keyframe) {
+          std::stringstream ss;
+          ss << "Keyframes: ";
+          BOOST_FOREACH(int id, keyframe_ids_){ ss << id << ", "; }
+          ROS_INFO("%s", ss.str().c_str());
+          keyframe_ids_.push_back(new_node->id_-1); //use the one before, because that one is still localized w.r.t. a keyframe
+        }
         ROS_INFO("Added Node, new Graphsize: %i", (int) graph_.size());
-        optimizeGraph();
-        Q_EMIT updateTransforms(getAllPosesAsMatrixList());
-        Q_EMIT setGraphEdges(getGraphEdges());
+        if((optimizer_->vertices().size() % ps->get<int>("optimizer_skip_step")) == 0){ 
+          optimizeGraph();
+        } else {
+          current_poses_.append(latest_transform_);
+          current_edges_.append( qMakePair((int)new_node->id_, last_matching_node_));
+          //Q_EMIT setGraphEdges(new QList<QPair<int, int> >(current_edges_));
+          //Q_EMIT updateTransforms(new QList<QMatrix4x4>(current_poses_));
+        }
+        //Q_EMIT updateTransforms(getAllPosesAsMatrixList());
+        //Q_EMIT setGraphEdges(getGraphEdges());
         //make the transform of the last node known
         broadcastTransform(ros::TimerEvent());
         visualizeGraphEdges();
         visualizeGraphNodes();
         visualizeFeatureFlow3D(marker_id++);
-        pointcloud_type const * the_pc(&(new_node->pc_col));
-        Q_EMIT setPointCloud(the_pc, latest_transform_);
-        ROS_DEBUG("GraphManager is thread %d", (unsigned int)QThread::currentThreadId());
-    }else{
-        //delete new_node; //is now  done by auto_ptr
-        ROS_WARN("Did not add as Node");
+        //if(last_matching_node_ <= 0){ cloudRendered(new_node->pc_col.get());}//delete points of non-matching nodes. They shall not be rendered
+
+        //The following updates the 3D visualization. Important only if optimizeGraph is not called every frame, as that does the update too
+        //pointcloud_type::Ptr the_pc = new_node->pc_col;
+        pointcloud_type* cloud_to_visualize = new_node->pc_col.get();
+        if(!found_trafo) cloud_to_visualize = new pointcloud_type();
+        Q_EMIT setPointCloud(cloud_to_visualize, latest_transform_);
+      
+    }else{ 
+        if(graph_.size() == 1){//if there is only one node which has less features, replace it by the new one
+          ROS_WARN("Choosing new initial node, because it has more features");
+          if(new_node->feature_locations_2d_.size() > graph_[0]->feature_locations_2d_.size()){
+            this->resetGraph();
+            process_node_runs_ = false;
+            return this->addNode(new_node);
+          }
+        } else { //delete new_node; //is now  done by auto_ptr
+          ROS_WARN("Did not add as Node");
+        }
     }
     QString message;
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
     Q_EMIT setGUIInfo(message.sprintf("%s, Graph Size: %iN/%iE, Duration: %f, Inliers: %i, &chi;<sup>2</sup>: %f", 
                                      (optimizer_->edges().size() > num_edges_before) ? "Added" : "Ignored",
                                      (int)optimizer_->vertices().size(), (int)optimizer_->edges().size(),
-                                     (std::clock()-starttime) / (double)CLOCKS_PER_SEC, (int)last_inlier_matches_.size(),
-                                     optimizer_->chi2()));
-    ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
+                                     elapsed, (int)last_inlier_matches_.size(), optimizer_->chi2()));
+    process_node_runs_ = false;
+    someone_is_waiting_for_me_ = false;
     return (optimizer_->edges().size() > num_edges_before);
 }
 
 
-///Get the norm of the translational part of an affine matrix (Helper for isBigTrafo)
-void GraphManager::mat2dist(const Eigen::Matrix4f& t, double &dist){
-    dist = sqrt(t(0,3)*t(0,3)+t(1,3)*t(1,3)+t(2,3)*t(2,3));
-}
-///Get euler angles from affine matrix (helper for isBigTrafo)
-void GraphManager::mat2RPY(const Eigen::Matrix4f& t, double& roll, double& pitch, double& yaw) {
-    roll = atan2(t(2,1),t(2,2));
-    pitch = atan2(-t(2,0),sqrt(t(2,1)*t(2,1)+t(2,2)*t(2,2)));
-    yaw = atan2(t(1,0),t(0,0));
-}
-// true iff edge qualifies for generating a new vertex
-bool GraphManager::isBigTrafo(const Eigen::Matrix4f& t){
-    double roll, pitch, yaw, dist;
-
-    mat2RPY(t, roll,pitch,yaw);
-    mat2dist(t, dist);
-
-    roll = roll/M_PI*180;
-    pitch = pitch/M_PI*180;
-    yaw = yaw/M_PI*180;
-
-    double max_angle = max(roll,max(pitch,yaw));
-
-    // at least 10cm or 5deg
-    return (dist > ParameterServer::instance()->get<double>("min_translation_meter")
-    		|| max_angle > ParameterServer::instance()->get<int>("min_rotation_degree"));
-}
-
-bool GraphManager::isBigTrafo(const Transformation3& t){
-    float angle_around_axis = 2.0*acos(t._rotation.w()) *180.0 / M_PI;
-    float dist = t._translation.norm();
-    QString infostring;
-    ROS_INFO("Rotation:% 4.2f, Distance: % 4.3fm", angle_around_axis, dist);
-    infostring.sprintf("Rotation:% 4.2f, Distance: % 4.3fm", angle_around_axis, dist);
-    Q_EMIT setGUIInfo2(infostring);
-    return (dist > ParameterServer::instance()->get<double>("min_translation_meter")
-    		|| angle_around_axis > ParameterServer::instance()->get<int>("min_rotation_degree"));
-}
-void GraphManager::visualizeFeatureFlow3D(unsigned int marker_id,
-                                          bool draw_outlier) const{
-    std::clock_t starttime=std::clock();
+void GraphManager::visualizeFeatureFlow3D(unsigned int marker_id, bool draw_outlier) const
+{
+    struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
     if (ransac_marker_pub_.getNumSubscribers() > 0){ //don't visualize, if nobody's looking
 
         visualization_msgs::Marker marker_lines;
@@ -434,10 +617,9 @@ void GraphManager::visualizeFeatureFlow3D(unsigned int marker_id,
         color_blue.a = 1.0;
 
         marker_lines.color = color_green; //just to set the alpha channel to non-zero
-
-        const AISNavigation::PoseGraph3D::Vertex* earlier_v; //used to get the transform
-        const AISNavigation::PoseGraph3D::Vertex* newer_v; //used to get the transform
-        AISNavigation::PoseGraph3D::VertexIDMap v_idmap = optimizer_->vertices();
+        const g2o::VertexSE3* earlier_v; //used to get the transform
+        const g2o::VertexSE3* newer_v; //used to get the transform
+        VertexIDMap v_idmap = optimizer_->vertices();
         // end of initialization
         ROS_DEBUG("Matches Visualization start: %lu Matches, %lu Inliers", last_matches_.size(), last_inlier_matches_.size());
 
@@ -450,10 +632,8 @@ void GraphManager::visualizeFeatureFlow3D(unsigned int marker_id,
                 int newer_id = last_matches_.at(i).queryIdx; //feature id in newer node
                 int earlier_id = last_matches_.at(i).trainIdx; //feature id in earlier node
 
-                //earlier_v = static_cast<const AISNavigation::PoseGraph2D::Vertex*>(v_idmap[graph_[last_matching_node_]->id_]);
-                earlier_v = optimizer_->vertex(last_matching_node_);
-                //newer_v = static_cast<const AISNavigation::PoseGraph3D::Vertex*>(v_idmap[graph_[graph_.size()-1]->id_]);
-                newer_v = optimizer_->vertex(graph_.size()-1);
+                earlier_v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(last_matching_node_));
+                newer_v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(graph_.size()-1));
 
                 //Outliers are red (newer) to blue (older)
                 marker_lines.colors.push_back(color_red);
@@ -461,10 +641,10 @@ void GraphManager::visualizeFeatureFlow3D(unsigned int marker_id,
 
                 Node* last = graph_.find(graph_.size()-1)->second;
                 marker_lines.points.push_back(
-                        pointInWorldFrame(last->feature_locations_3d_[newer_id], newer_v->transformation));
+                        pointInWorldFrame(last->feature_locations_3d_[newer_id], newer_v->estimate()));
                 Node* prev = graph_.find(last_matching_node_)->second;
                 marker_lines.points.push_back(
-                        pointInWorldFrame(prev->feature_locations_3d_[earlier_id], earlier_v->transformation));
+                        pointInWorldFrame(prev->feature_locations_3d_[earlier_id], earlier_v->estimate()));
             }
         }
 
@@ -472,10 +652,8 @@ void GraphManager::visualizeFeatureFlow3D(unsigned int marker_id,
             int newer_id = last_inlier_matches_.at(i).queryIdx; //feature id in newer node
             int earlier_id = last_inlier_matches_.at(i).trainIdx; //feature id in earlier node
 
-            //earlier_v = static_cast<AISNavigation::PoseGraph3D::Vertex*>(v_idmap[graph_[last_matching_node_]->id_]);
-            earlier_v = optimizer_->vertex(last_matching_node_);
-            //newer_v = static_cast<AISNavigation::PoseGraph3D::Vertex*>(v_idmap[graph_[graph_.size()-1]->id_]);
-            newer_v = optimizer_->vertex(graph_.size()-1);
+            earlier_v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(last_matching_node_));
+            newer_v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(graph_.size()-1));
 
 
             //inliers are green (newer) to blue (older)
@@ -484,46 +662,21 @@ void GraphManager::visualizeFeatureFlow3D(unsigned int marker_id,
 
             Node* last = graph_.find(graph_.size()-1)->second;
             marker_lines.points.push_back(
-                    pointInWorldFrame(last->feature_locations_3d_[newer_id], newer_v->transformation));
+                    pointInWorldFrame(last->feature_locations_3d_[newer_id], newer_v->estimate()));
             Node* prev = graph_.find(last_matching_node_)->second;
             marker_lines.points.push_back(
-                    pointInWorldFrame(prev->feature_locations_3d_[earlier_id], earlier_v->transformation));
+                    pointInWorldFrame(prev->feature_locations_3d_[earlier_id], earlier_v->estimate()));
         }
 
         ransac_marker_pub_.publish(marker_lines);
         ROS_DEBUG_STREAM("Published  " << marker_lines.points.size()/2 << " lines");
     }
-    ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "function runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
-}
-
-//do spurious type conversions
-geometry_msgs::Point pointInWorldFrame(const Eigen::Vector4f& point3d,
-        Transformation3 transf){
-    Vector3f tmp(point3d[0], point3d[1], point3d[2]);
-    tmp = transf * tmp; //transform to world frame
-    geometry_msgs::Point p;
-    p.x = tmp.x(); 
-    p.y = tmp.y(); 
-    p.z = tmp.z();
-    return p;
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
 }
 
 
-QList<QPair<int, int> >* GraphManager::getGraphEdges() const {
-    std::clock_t starttime=std::clock();
-    QList<QPair<int, int> >* edge_list = new QList<QPair<int, int> >();
-    AISNavigation::PoseGraph3D::Vertex *v1, *v2; //used in loop
-    AISNavigation::PoseGraph3D::EdgeSet::iterator edge_iter = optimizer_->edges().begin();
-    for(;edge_iter != optimizer_->edges().end(); edge_iter++) {
-        v1 = static_cast<AISNavigation::PoseGraph3D::Vertex*>((*edge_iter)->from());
-        v2 = static_cast<AISNavigation::PoseGraph3D::Vertex*>((*edge_iter)->to());
-        edge_list->append( qMakePair(v1->id(), v2->id()));
-    }
-    ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
-    return edge_list;
-}
 void GraphManager::visualizeGraphEdges() const {
-    std::clock_t starttime=std::clock();
+    struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
 
     if (marker_pub_.getNumSubscribers() > 0){ //no visualization for nobody
         visualization_msgs::Marker edges_marker;
@@ -551,19 +704,23 @@ void GraphManager::visualizeGraphEdges() const {
         edges_marker.color.b = 1.0f;
         edges_marker.color.a = 0.5f;//looks smoother
         geometry_msgs::Point point; //start and endpoint for each line segment
-        AISNavigation::PoseGraph3D::Vertex* v; //used in loop
-        AISNavigation::PoseGraph3D::EdgeSet::iterator edge_iter = optimizer_->edges().begin();
+        g2o::VertexSE3* v1,* v2; //used in loop
+        EdgeSet::iterator edge_iter = optimizer_->edges().begin();
         int counter = 0;
         for(;edge_iter != optimizer_->edges().end(); edge_iter++, counter++) {
-            v = static_cast<AISNavigation::PoseGraph3D::Vertex*>((*edge_iter)->from());
-            point.x = v->transformation.translation().x();
-            point.y = v->transformation.translation().y();
-            point.z = v->transformation.translation().z();
+            g2o::EdgeSE3* myedge = dynamic_cast<g2o::EdgeSE3*>(*edge_iter);
+            std::vector<g2o::HyperGraph::Vertex*>& myvertices = myedge->vertices();
+            v1 = dynamic_cast<g2o::VertexSE3*>(myvertices.at(1));
+            v2 = dynamic_cast<g2o::VertexSE3*>(myvertices.at(0));
+
+            point.x = v1->estimate().translation().x();
+            point.y = v1->estimate().translation().y();
+            point.z = v1->estimate().translation().z();
             edges_marker.points.push_back(point);
-            v = static_cast<AISNavigation::PoseGraph3D::Vertex*>((*edge_iter)->to());
-            point.x = v->transformation.translation().x();
-            point.y = v->transformation.translation().y();
-            point.z = v->transformation.translation().z();
+            
+            point.x = v2->estimate().translation().x();
+            point.y = v2->estimate().translation().y();
+            point.z = v2->estimate().translation().z();
             edges_marker.points.push_back(point);
         }
 
@@ -571,11 +728,11 @@ void GraphManager::visualizeGraphEdges() const {
         ROS_INFO("published %d graph edges", counter);
     }
 
-    ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "function runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
 }
 
 void GraphManager::visualizeGraphNodes() const {
-    std::clock_t starttime=std::clock();
+    struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
 
     if (marker_pub_.getNumSubscribers() > 0){ //don't visualize, if nobody's looking
         visualization_msgs::Marker nodes_marker;
@@ -616,25 +773,25 @@ void GraphManager::visualizeGraphNodes() const {
         std_msgs::ColorRGBA arrow_color_blue ;  //blue z axis
         arrow_color_blue.b = 1.0;
         arrow_color_blue.a = 1.0;
-        Vector3f origin(0.0,0.0,0.0);
-        Vector3f x_axis(0.2,0.0,0.0); //20cm long axis for the first (almost fixed) node
-        Vector3f y_axis(0.0,0.2,0.0);
-        Vector3f z_axis(0.0,0.0,0.2);
-        Vector3f tmp; //the transformed endpoints
+        Eigen::Vector3d origin(0.0,0.0,0.0);
+        Eigen::Vector3d x_axis(0.2,0.0,0.0); //20cm long axis for the first (almost fixed) node
+        Eigen::Vector3d y_axis(0.0,0.2,0.0);
+        Eigen::Vector3d z_axis(0.0,0.0,0.2);
+        Eigen::Vector3d tmp; //the transformed endpoints
         int counter = 0;
-        AISNavigation::PoseGraph3D::Vertex* v; //used in loop
-        AISNavigation::PoseGraph3D::VertexIDMap::iterator vertex_iter = optimizer_->vertices().begin();
+        g2o::VertexSE3* v; //used in loop
+        VertexIDMap::iterator vertex_iter = optimizer_->vertices().begin();
         for(/*see above*/; vertex_iter != optimizer_->vertices().end(); vertex_iter++, counter++) {
-            v = static_cast<AISNavigation::PoseGraph3D::Vertex*>((*vertex_iter).second);
-            //v->transformation.rotation().x()+ v->transformation.rotation().y()+ v->transformation.rotation().z()+ v->transformation.rotation().w();
-            tmp = v->transformation * origin;
+            v = dynamic_cast<g2o::VertexSE3* >((*vertex_iter).second);
+            //v->estimate().rotation().x()+ v->estimate().rotation().y()+ v->estimate().rotation().z()+ v->estimate().rotation().w();
+            tmp = v->estimate() * origin;
             tail.x = tmp.x();
             tail.y = tmp.y();
             tail.z = tmp.z();
             //Endpoints X-Axis
             nodes_marker.points.push_back(tail);
             nodes_marker.colors.push_back(arrow_color_red);
-            tmp = v->transformation * x_axis;
+            tmp = v->estimate() * x_axis;
             tip.x  = tmp.x();
             tip.y  = tmp.y();
             tip.z  = tmp.z();
@@ -643,7 +800,7 @@ void GraphManager::visualizeGraphNodes() const {
             //Endpoints Y-Axis
             nodes_marker.points.push_back(tail);
             nodes_marker.colors.push_back(arrow_color_green);
-            tmp = v->transformation * y_axis;
+            tmp = v->estimate() * y_axis;
             tip.x  = tmp.x();
             tip.y  = tmp.y();
             tip.z  = tmp.z();
@@ -652,7 +809,7 @@ void GraphManager::visualizeGraphNodes() const {
             //Endpoints Z-Axis
             nodes_marker.points.push_back(tail);
             nodes_marker.colors.push_back(arrow_color_blue);
-            tmp = v->transformation * z_axis;
+            tmp = v->estimate() * z_axis;
             tip.x  = tmp.x();
             tip.y  = tmp.y();
             tip.z  = tmp.z();
@@ -668,16 +825,15 @@ void GraphManager::visualizeGraphNodes() const {
         ROS_INFO("published %d graph nodes", counter);
     }
 
-    ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "function runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
 }
 
-bool GraphManager::addEdgeToHogman(AIS::LoadedEdge3D edge, bool largeEdge) {
-    std::clock_t starttime=std::clock();
-    freshlyOptimized_ = false;
+bool GraphManager::addEdgeToG2O(const LoadedEdge3D& edge, bool largeEdge, bool set_estimate) {
+    struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
 
-    AIS::PoseGraph3D::Vertex* v1 = optimizer_->vertex(edge.id1);
-    AIS::PoseGraph3D::Vertex* v2 = optimizer_->vertex(edge.id2);
-
+    QMutexLocker locker(&optimizer_mutex);
+    g2o::VertexSE3* v1 = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(edge.id1));
+    g2o::VertexSE3* v2 = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(edge.id2));
 
     // at least one vertex has to be created, assert that the transformation
     // is large enough to avoid to many vertices on the same spot
@@ -688,71 +844,107 @@ bool GraphManager::addEdgeToHogman(AIS::LoadedEdge3D edge, bool largeEdge) {
         }
     }
 
-    if (!v1) {
-        v1 = optimizer_->addVertex(edge.id1, Transformation3(), Matrix6::eye(1.0));
+    if(!v1 && !v2){
+      ROS_ERROR("Missing both vertices: %i, %i, cannot create edge", edge.id1, edge.id2);
+      return false;
+    }
+    else if (!v1 && v2) {
+        v1 = new g2o::VertexSE3;
         assert(v1);
+        v1->setId(edge.id1);
+        v1->setEstimate(v2->estimate() * edge.mean.inverse());
+        optimizer_->addVertex(v1); 
+        latest_transform_ = g2o2QMatrix(v1->estimate()); 
     }
-    if (!v2) {
-        v2 = optimizer_->addVertex(edge.id2, Transformation3(), Matrix6::eye(1.0));
+    else if (!v2 && v1) {
+        v2 = new g2o::VertexSE3;
         assert(v2);
+        v2->setId(edge.id2);
+        v2->setEstimate(v1->estimate() * edge.mean);
+        optimizer_->addVertex(v2); 
+        latest_transform_ = g2o2QMatrix(v2->estimate()); 
     }
-    optimizer_->addEdge(v1, v2, edge.mean, edge.informationMatrix);
-    ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "function runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
+    else if(set_estimate){
+        v2->setEstimate(v1->estimate() * edge.mean);
+    }
+    g2o::EdgeSE3* g2o_edge = new g2o::EdgeSE3;
+    g2o_edge->vertices()[0] = v1;
+    g2o_edge->vertices()[1] = v2;
+    g2o_edge->setMeasurement(edge.mean);
+    g2o_edge->setInverseMeasurement(edge.mean.inverse());
+    g2o_edge->setInformation(edge.informationMatrix);
+    optimizer_->addEdge(g2o_edge);
 
+
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
     return true;
-
 }
 
-void GraphManager::optimizeGraph(){
-    std::clock_t starttime=std::clock();
-    const int iterations = 10;
-    int currentIt = optimizer_->optimize(iterations, true);
+void GraphManager::optimizeGraph(int max_iter){
+    struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
+    int iterations = max_iter >= 0 ? max_iter : ParameterServer::instance()->get<int>("optimizer_iterations");
+    QMutexLocker locker(&optimizer_mutex);
 
-    ROS_INFO_STREAM("Hogman Statistics: " << optimizer_->vertices().size() << " nodes, " 
-                    << optimizer_->edges().size() << " edges. "
-                    << "chi2: " << optimizer_->chi2()
-                    << ", Iterations: " << currentIt);
+    ROS_WARN("Starting Optimization");
+    std::string bagfile_name = ParameterServer::instance()->get<std::string>("bagfile_name");
+    optimizer_->save((bagfile_name + "_g2o-optimizer-save-file-before").c_str());
+    optimizer_->initializeOptimization();
+    double prev_chi2 = std::numeric_limits<double>::max();
+    int i = 0;
+    for(; i <  iterations; i++){
+      int currentIt = optimizer_->optimize(1);
+      optimizer_->computeActiveErrors();
+      ROS_INFO_STREAM("G2O Statistics: " << optimizer_->vertices().size() << " nodes, " 
+                      << optimizer_->edges().size() << " edges. "
+                      << "chi2: " << optimizer_->chi2() << ", Iterations: " << currentIt);
+      if(!(prev_chi2 - optimizer_->chi2() > optimizer_->chi2()*0.0001)){ // improvement less than 0.01 Percent
+        ROS_INFO("G2O Converged after %d iterations", i);
+        break;
+      }
+      prev_chi2 = optimizer_->chi2();
+    }
+    ROS_INFO("Finished G2O optimization after %d iterations", i);
+    optimizer_->save((bagfile_name + "_g2o-optimizer-save-file-after").c_str());
 
-    freshlyOptimized_ = true;
 
-    AISNavigation::PoseGraph3D::Vertex* v = optimizer_->vertex(optimizer_->vertices().size()-1);
-    kinect_transform_ =  hogman2TF(v->transformation);
-    //pcl_ros::transformAsMatrix(kinect_transform_, latest_transform_);
-    latest_transform_ = hogman2QMatrix(v->transformation); 
+    g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(optimizer_->vertices().size()-1));
 
-    /*publish the corrected transforms to the visualization module every five seconds
-    if( ((std::clock()-last_batch_update_) / (double)CLOCKS_PER_SEC) > 2){
-        publishCorrectedTransforms();
-        last_batch_update_ = std::clock();
-    }*/
-    ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "function runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
+    computed_motion_ =  g2o2TF(v->estimate());
+    latest_transform_ = g2o2QMatrix(v->estimate()); 
+    Q_EMIT setGraphEdges(getGraphEdges());
+    Q_EMIT updateTransforms(getAllPosesAsMatrixList());
+
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
 }
 
 void GraphManager::broadcastTransform(const ros::TimerEvent& ){
+  /*
+    ros::Time now = ros::Time::now();
+    std::string fixed_frame = ParameterServer::instance()->get<std::string>("fixed_frame_name");
+    std::string base_frame  = ParameterServer::instance()->get<std::string>("base_frame_name");
+    
+    if(graph_.size() > 0 && !batch_processing_runs_ ) {
+        Node* node = graph_[graph_.size()-1]; //latest node
+        base2points_ = node->getBase2PointsTransform();
 
-    tf::Transform cam2rgb;
-    cam2rgb.setRotation(tf::createQuaternionFromRPY(-1.57,0,-1.57));
-    cam2rgb.setOrigin(tf::Point(0,-0.04,0));
+        tf::Transform  world2base;
+        world2base = init_base_pose_*base2points_*computed_motion_*base2points_.inverse();
+        br_.sendTransform(tf::StampedTransform(world2base, now, fixed_frame, base_frame));
 
-
-    world2cam_ = cam2rgb*kinect_transform_;
-    //printTransform("kinect", kinect_transform_);
-    time_of_last_transform_ = ros::Time::now();
-    br_.sendTransform(tf::StampedTransform(world2cam_, time_of_last_transform_,
-                      "/openni_camera", "/slam_transform"));
-
-    if(!batch_processing_runs_)
-        br_.sendTransform(tf::StampedTransform(cam2rgb, time_of_last_transform_,
-                          "/openni_camera", "/batch_transform"));
-
-    //visualize the transformation
-    std::stringstream ss;
-    Eigen::Matrix4f transform;
-    pcl_ros::transformAsMatrix(kinect_transform_, transform);
-    ss << "<b>Current Camera Transformation w.r.t. the Initial Frame</b>";
-    ss << "<pre>" <<  transform << "</pre>";
-    QString mystring(ss.str().c_str());
-    Q_EMIT newTransformationMatrix(mystring);
+        //visualize the transformation
+        std::stringstream ss;
+        Eigen::Matrix4f transform;
+        pcl_ros::transformAsMatrix(computed_motion_, transform);
+        ss << "<b>Current Camera Transformation w.r.t. the Initial Frame</b>";
+        ss << "<pre>" <<  transform << "</pre>";
+        QString mystring(ss.str().c_str());
+        Q_EMIT newTransformationMatrix(mystring);
+    } 
+    else //no graph, no map, send initial pose (usually identity)
+    {
+        br_.sendTransform(tf::StampedTransform(init_base_pose_, now, fixed_frame, base_frame));
+    }
+    */
 
 }
 
@@ -760,12 +952,12 @@ void GraphManager::broadcastTransform(const ros::TimerEvent& ){
  * Publish the updated transforms for the graph node resp. clouds
  *
 void GraphManager::publishCorrectedTransforms(){
-    std::clock_t starttime=std::clock();
+    struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
     //fill message
     rgbdslam::CloudTransforms msg;
     for (unsigned int i = 0; i < optimizer_->vertices().size(); ++i) {
-        AIS::PoseGraph3D::Vertex* v = optimizer_->vertex(i);
-        tf::Transform trans = hogman2TF(v->transformation);
+        g2o::VertexSE3* v = optimizer_->vertex(i);
+        tf::Transform trans = g2o2TF(v->estimate());
         geometry_msgs::Transform trans_msg;
         tf::transformTFToMsg(trans,trans_msg);
         msg.transforms.push_back(trans_msg);
@@ -775,7 +967,7 @@ void GraphManager::publishCorrectedTransforms(){
 
     if (transform_pub_.getNumSubscribers() > 0)
         transform_pub_.publish(msg);
-    ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "function runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
 }*/
 
 void GraphManager::reset(){
@@ -789,104 +981,161 @@ void GraphManager::deleteLastFrame(){
       Q_EMIT deleteLastNode();
       return;
     }
-    AISNavigation::PoseGraph3D::Vertex* v_to_del = optimizer_->vertex(optimizer_->vertices().size()-1);//last vertex
-    AISNavigation::PoseGraph3D::Vertex *v1, *v2; //used in loop as temporaries
-    AISNavigation::PoseGraph3D::EdgeSet::iterator edge_iter = optimizer_->edges().begin();
+    optimizer_mutex.lock();
+    g2o::VertexSE3* v_to_del = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(optimizer_->vertices().size()-1));//last vertex
+    g2o::VertexSE3 *v1, *v2; //used in loop as temporaries
+    EdgeSet::iterator edge_iter = optimizer_->edges().begin();
     for(;edge_iter != optimizer_->edges().end(); edge_iter++) {
-        v1 = static_cast<AISNavigation::PoseGraph3D::Vertex*>((*edge_iter)->from());
-        v2 = static_cast<AISNavigation::PoseGraph3D::Vertex*>((*edge_iter)->to());
+        g2o::EdgeSE3* myedge = dynamic_cast<g2o::EdgeSE3*>(*edge_iter);
+        std::vector<g2o::HyperGraph::Vertex*>& myvertices = myedge->vertices();
+        v1 = dynamic_cast<g2o::VertexSE3*>(myvertices.at(1));
+        v2 = dynamic_cast<g2o::VertexSE3*>(myvertices.at(0));
         if(v1->id() == v_to_del->id() || v2->id() == v_to_del->id()) 
           optimizer_->removeEdge((*edge_iter));
     }
 
     optimizer_->removeVertex(v_to_del);
     graph_.erase(graph_.size()-1);
+    optimizer_mutex.unlock();
+    Q_EMIT deleteLastNode();
     optimizeGraph();//s.t. the effect of the removed edge transforms are removed to
     ROS_INFO("Removed most recent node");
     Q_EMIT setGUIInfo("Removed most recent node");
-    Q_EMIT setGraphEdges(getGraphEdges());
-    Q_EMIT deleteLastNode();
+    //Q_EMIT setGraphEdges(getGraphEdges());
     //updateTransforms needs to be last, as it triggers a redraw
-    Q_EMIT updateTransforms(getAllPosesAsMatrixList());
+    //Q_EMIT updateTransforms(getAllPosesAsMatrixList());
+}
+
+QList<QPair<int, int> >* GraphManager::getGraphEdges()
+{
+    struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
+    //QList<QPair<int, int> >* edge_list = new QList<QPair<int, int> >();
+    current_edges_.clear();
+    g2o::VertexSE3 *v1, *v2; //used in loop
+    EdgeSet::iterator edge_iter = optimizer_->edges().begin();
+    for(;edge_iter != optimizer_->edges().end(); edge_iter++) {
+        g2o::EdgeSE3* myedge = dynamic_cast<g2o::EdgeSE3*>(*edge_iter);
+        std::vector<g2o::HyperGraph::Vertex*>& myvertices = myedge->vertices();
+        v1 = dynamic_cast<g2o::VertexSE3*>(myvertices.at(1));
+        v2 = dynamic_cast<g2o::VertexSE3*>(myvertices.at(0));
+        current_edges_.append( qMakePair(v1->id(), v2->id()));
+    }
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
+    return new QList<QPair<int, int> >(current_edges_);
 }
 
 QList<QMatrix4x4>* GraphManager::getAllPosesAsMatrixList(){
-    std::clock_t starttime=std::clock();
+    struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
     ROS_DEBUG("Retrieving all transformations from optimizer");
-    QList<QMatrix4x4>* result = new QList<QMatrix4x4>();
+    //QList<QMatrix4x4>* result = new QList<QMatrix4x4>();
+    current_poses_.clear();
 #if defined(QT_VERSION) && QT_VERSION >= 0x040700
-    result->reserve(optimizer_->vertices().size());//only allocates the internal pointer array
+    current_poses_.reserve(optimizer_->vertices().size());//only allocates the internal pointer array
 #endif
 
     for (unsigned int i = 0; i < optimizer_->vertices().size(); ++i) {
-        AIS::PoseGraph3D::Vertex* v = optimizer_->vertex(i);
+        g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(i));
         if(v){ 
-            result->push_back(hogman2QMatrix(v->transformation)); 
+            current_poses_.push_back(g2o2QMatrix(v->estimate())); 
         } else {
             ROS_ERROR("Nullpointer in graph at position %i!", i);
         }
     }
-    ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "function runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
-    return result;
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
+    return new QList<QMatrix4x4>(current_poses_); //pointer to a copy
 }
 
 // If QT Concurrent is available, run the saving in a seperate thread
-//TODO: This doesn't work yet (because of method instead of function call?
-#ifndef QT_NO_CONCURRENT
-using namespace QtConcurrent;
-void GraphManager::saveAllClouds(QString filename){
-  QFuture<void> f1 = run(this, &GraphManager::saveAllCloudsToFile, filename);
-  //f1.waitForFinished();
+void GraphManager::saveAllClouds(QString filename, bool threaded){
+    if (ParameterServer::instance()->get<bool>("concurrent_edge_construction") && threaded) {
+        QFuture<void> f1 = QtConcurrent::run(this, &GraphManager::saveAllCloudsToFile, filename);
+        //f1.waitForFinished();
+    }
+    else {// Otherwise just call it without threading
+        saveAllCloudsToFile(filename);
+    }
 }
-void GraphManager::saveIndividualClouds(QString filename){
-  //    saveIndividualCloudsToFile(filename);
-  QFuture<void> f1 = run(this, &GraphManager::saveIndividualCloudsToFile, filename);
-  //f1.waitForFinished();
-}
-#else
-// Otherwise just call it without threading
-void GraphManager::saveAllClouds(QString filename){
-      saveAllCloudsToFile(filename);
-}
-void GraphManager::saveIndividualClouds(QString filename){
-      saveIndividualCloudsToFile(filename);
-}
-#endif
 
-void GraphManager::saveIndividualCloudsToFile(QString file_basename){
-    std::clock_t starttime=std::clock();
-    ROS_INFO("Saving all clouds to %sxxxx.pcd, this may take a while as they need to be transformed to a common coordinate frame.", qPrintable(file_basename));
+void GraphManager::saveIndividualClouds(QString filename, bool threaded){
+  if (ParameterServer::instance()->get<bool>("concurrent_edge_construction") && threaded) {
+    QFuture<void> f1 = QtConcurrent::run(this, &GraphManager::saveIndividualCloudsToFile, filename);
+    //f1.waitForFinished();
+  }
+  else {
+    saveIndividualCloudsToFile(filename);
+  }
+}
+
+void GraphManager::saveIndividualCloudsToFile(QString file_basename)
+{
+    struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
+    ROS_INFO("Saving all clouds to %sxxxx.pcd", qPrintable(file_basename));
+    std::string gt = ParameterServer::instance()->get<std::string>("ground_truth_frame_name");
+    ROS_INFO_COND(!gt.empty(), "Saving all clouds with ground truth sensor position to gt_%sxxxx.pcd", qPrintable(file_basename));
+
     batch_processing_runs_ = true;
-    tf::Transform  world2cam;
+    tf::Transform  world2base;
     QString message, filename;
+    std::string fixed_frame_id = ParameterServer::instance()->get<std::string>("fixed_frame_name");
     for (unsigned int i = 0; i < optimizer_->vertices().size(); ++i) {
-        AIS::PoseGraph3D::Vertex* v = optimizer_->vertex(i);
+        g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(i));
         if(!v){ 
             ROS_ERROR("Nullpointer in graph at position %i!", i);
             continue;
         }
-        tf::Transform transform = hogman2TF(v->transformation);
+        if(graph_[i]->pc_col->size() == 0){
+            ROS_INFO("Skipping Node %i, point cloud data is empty!", i);
+            continue;
+        }
+        /*/TODO: is all this correct?
+        tf::Transform transform = g2o2TF(v->estimate());
         tf::Transform cam2rgb;
         cam2rgb.setRotation(tf::createQuaternionFromRPY(-1.57,0,-1.57));
         cam2rgb.setOrigin(tf::Point(0,-0.04,0));
-        world2cam = cam2rgb*transform;
-        Eigen::Vector4f sensor_origin(world2cam.getOrigin().x(),world2cam.getOrigin().y(),world2cam.getOrigin().z(),world2cam.getOrigin().w());
-        Eigen::Quaternionf sensor_orientation(world2cam.getRotation().w(),world2cam.getRotation().x(),world2cam.getRotation().y(),world2cam.getRotation().z());
-        graph_[i]->pc_col.sensor_origin_ = sensor_origin;
-        graph_[i]->pc_col.sensor_orientation_ = sensor_orientation;
-        graph_[i]->pc_col.header.frame_id = "/openni_camera";
+        world2base = cam2rgb*transform;
+        */
+        tf::Transform pose = g2o2TF(v->estimate());
+        tf::StampedTransform base2points = graph_[i]->getBase2PointsTransform();//get pose of base w.r.t current pc at capture time
+        world2base = init_base_pose_*base2points*pose*base2points.inverse();
+
+        Eigen::Vector4f sensor_origin(world2base.getOrigin().x(),world2base.getOrigin().y(),world2base.getOrigin().z(),world2base.getOrigin().w());
+        Eigen::Quaternionf sensor_orientation(world2base.getRotation().w(),world2base.getRotation().x(),world2base.getRotation().y(),world2base.getRotation().z());
+
+        graph_[i]->pc_col->sensor_origin_ = sensor_origin;
+        graph_[i]->pc_col->sensor_orientation_ = sensor_orientation;
+        graph_[i]->pc_col->header.frame_id = fixed_frame_id;
+
         filename.sprintf("%s_%04d.pcd", qPrintable(file_basename), i);
         Q_EMIT setGUIStatus(message.sprintf("Saving to %s: Transformed Node %i/%i", qPrintable(filename), i, (int)optimizer_->vertices().size()));
-        pcl::io::savePCDFile(qPrintable(filename), graph_[i]->pc_col, true); //Last arg is binary mode. ASCII mode drops color bits
+        pcl::io::savePCDFile(qPrintable(filename), *(graph_[i]->pc_col), true); //Last arg: true is binary mode. ASCII mode drops color bits
+        
+        if(!gt.empty()){
+          tf::StampedTransform gt_world2base = graph_[i  ]->getGroundTruthTransform();//get mocap pose of base in map
+          if( gt_world2base.frame_id_   == "/missing_ground_truth" ){ 
+            ROS_WARN_STREAM("Skipping ground truth: " << gt_world2base.child_frame_id_ << " child/parent " << gt_world2base.frame_id_);
+            continue;
+          }
+          Eigen::Vector4f sensor_origin(gt_world2base.getOrigin().x(),gt_world2base.getOrigin().y(),gt_world2base.getOrigin().z(),gt_world2base.getOrigin().w());
+          Eigen::Quaternionf sensor_orientation(gt_world2base.getRotation().w(),gt_world2base.getRotation().x(),gt_world2base.getRotation().y(),gt_world2base.getRotation().z());
+
+          graph_[i]->pc_col->sensor_origin_ = sensor_origin;
+          graph_[i]->pc_col->sensor_orientation_ = sensor_orientation;
+          graph_[i]->pc_col->header.frame_id = fixed_frame_id;
+
+          filename.sprintf("%s_%04d_gt.pcd", qPrintable(file_basename), i);
+          Q_EMIT setGUIStatus(message.sprintf("Saving to %s: Transformed Node %i/%i", qPrintable(filename), i, (int)optimizer_->vertices().size()));
+          pcl::io::savePCDFile(qPrintable(filename), *(graph_[i]->pc_col), true); //Last arg: true is binary mode. ASCII mode drops color bits
+        }
+  
     }
     Q_EMIT setGUIStatus("Saved all point clouds");
     ROS_INFO ("Saved all points clouds to %sxxxx.pcd", qPrintable(file_basename));
     batch_processing_runs_ = false;
-    ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
 }
 
 void GraphManager::saveAllCloudsToFile(QString filename){
-    std::clock_t starttime=std::clock();
+    struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
     pointcloud_type aggregate_cloud; ///will hold all other clouds
     ROS_INFO("Saving all clouds to %s, this may take a while as they need to be transformed to a common coordinate frame.", qPrintable(filename));
     batch_processing_runs_ = true;
@@ -894,38 +1143,46 @@ void GraphManager::saveAllCloudsToFile(QString filename){
     //fill message
     //rgbdslam::CloudTransforms msg;
     QString message;
+    tf::Transform cam2rgb;
+    cam2rgb.setRotation(tf::createQuaternionFromRPY(-1.57,0,-1.57));
+    cam2rgb.setOrigin(tf::Point(0,-0.04,0));
     for (unsigned int i = 0; i < optimizer_->vertices().size(); ++i) {
-        AIS::PoseGraph3D::Vertex* v = optimizer_->vertex(i);
+        g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(i));
         if(!v){ 
             ROS_ERROR("Nullpointer in graph at position %i!", i);
             continue;
         }
-        tf::Transform transform = hogman2TF(v->transformation);
-        tf::Transform cam2rgb;
-        cam2rgb.setRotation(tf::createQuaternionFromRPY(-1.57,0,-1.57));
-        cam2rgb.setOrigin(tf::Point(0,-0.04,0));
+        tf::Transform transform = g2o2TF(v->estimate());
         world2cam = cam2rgb*transform;
-        transformAndAppendPointCloud (graph_[i]->pc_col, aggregate_cloud, world2cam, Max_Depth);
+        transformAndAppendPointCloud (*(graph_[i]->pc_col), aggregate_cloud, world2cam, Max_Depth);
+
+        if(ParameterServer::instance()->get<bool>("batch_processing"))
+          graph_[i]->clearPointCloud(); //saving all is the last thing to do, so these are not required anymore
         Q_EMIT setGUIStatus(message.sprintf("Saving to %s: Transformed Node %i/%i", qPrintable(filename), i, (int)optimizer_->vertices().size()));
     }
     aggregate_cloud.header.frame_id = "/openni_camera";
-    if(filename.endsWith(".pcd", Qt::CaseInsensitive))
-      pcl::io::savePCDFile(qPrintable(filename), aggregate_cloud, true); //Last arg is binary mode
     if(filename.endsWith(".ply", Qt::CaseInsensitive))
       pointCloud2MeshFile(filename, aggregate_cloud);
+    if(filename.endsWith(".pcd", Qt::CaseInsensitive))
+      pcl::io::savePCDFile(qPrintable(filename), aggregate_cloud, true); //Last arg is binary mode
+    else {
+      ROS_WARN("Filename misses correct extension (.pcd or .ply) using .pcd");
+      filename.append(".pcd");
+      pcl::io::savePCDFile(qPrintable(filename), aggregate_cloud, true); //Last arg is binary mode
+    }
     Q_EMIT setGUIStatus(message.sprintf("Saved %d data points to %s", (int)aggregate_cloud.points.size(), qPrintable(filename)));
     ROS_INFO ("Saved %d data points to %s", (int)aggregate_cloud.points.size(), qPrintable(filename));
 
-    if (aggregate_cloud_pub_.getNumSubscribers() > 0){ //if it should also be send out
+    if (whole_cloud_pub_.getNumSubscribers() > 0){ //if it should also be send out
         sensor_msgs::PointCloud2 cloudMessage_; //this will be send out in batch mode
         pcl::toROSMsg(aggregate_cloud,cloudMessage_);
         cloudMessage_.header.frame_id = "/openni_camera";
         cloudMessage_.header.stamp = ros::Time::now();
-        aggregate_cloud_pub_.publish(cloudMessage_);
+        whole_cloud_pub_.publish(cloudMessage_);
         ROS_INFO("Aggregate pointcloud sent");
     }
     batch_processing_runs_ = false;
-    ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "function runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
 }
 
 void GraphManager::pointCloud2MeshFile(QString filename, pointcloud_type full_cloud){
@@ -957,39 +1214,109 @@ void GraphManager::pointCloud2MeshFile(QString filename, pointcloud_type full_cl
 }
   
 
+void GraphManager::saveTrajectory(QString filebasename){
+    struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
+    if(graph_.size() == 0){
+      ROS_ERROR("Graph is empty, no trajectory can be saved");
+      return;
+    }
+    ROS_INFO("Logging Trajectory");
+    QMutexLocker locker(&optimizer_mutex);
+    std::string gt = ParameterServer::instance()->get<std::string>("ground_truth_frame_name");
+
+    ROS_INFO("Comparison of relative motion with ground truth");
+    QString gtt_fname("_ground_truth.txt");
+    QFile gtt_file(gtt_fname.prepend(filebasename));//file is closed on destruction
+    if(!gtt_file.open(QIODevice::WriteOnly|QIODevice::Text)) return; //TODO: Errormessage
+    QTextStream gtt_out(&gtt_file);
+    tf::StampedTransform b2p = graph_[0]->getGroundTruthTransform();
+    gtt_out.setRealNumberNotation(QTextStream::FixedNotation);
+    gtt_out << "# TF Coordinate Frame ID: " << b2p.frame_id_.c_str() << "(data: " << b2p.child_frame_id_.c_str() << ")\n";
+
+     
+    QString et_fname("_estimate.txt");
+    QFile et_file (et_fname.prepend(filebasename));//file is closed on destruction
+    if(!et_file.open(QIODevice::WriteOnly|QIODevice::Text)) return; //TODO: Errormessage
+    QTextStream et_out(&et_file);
+    et_out.setRealNumberNotation(QTextStream::FixedNotation);
+    b2p = graph_[0]->getBase2PointsTransform();
+    et_out << "# TF Coordinate Frame ID: " << b2p.frame_id_.c_str() << "(data: " << b2p.child_frame_id_.c_str() << ")\n";
+
+    for (unsigned int i = 0; i < optimizer_->vertices().size(); ++i) {
+        g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(i));
+        ROS_ERROR_COND(!v, "Nullpointer in graph at position %i!", i);
+
+        tf::Transform pose = g2o2TF(v->estimate());
+
+        tf::StampedTransform base2points = graph_[i]->getBase2PointsTransform();//get pose of base w.r.t current pc at capture time
+        tf::Transform world2base = init_base_pose_*base2points*pose*base2points.inverse();
+
+        logTransform(et_out, world2base, graph_[i]->pc_col->header.stamp.toSec()); 
+        //Eigen::Matrix<double, 6,6> uncertainty = v->uncertainty();
+        //et_out << uncertainty(0,0) << "\t" << uncertainty(1,1) << "\t" << uncertainty(2,2) << "\t" << uncertainty(3,3) << "\t" << uncertainty(4,4) << "\t" << uncertainty(5,5) <<"\n" ;
+        if(!gt.empty()){
+          tf::StampedTransform gt_world2base = graph_[i  ]->getGroundTruthTransform();//get mocap pose of base in map
+          if( gt_world2base.frame_id_   == "/missing_ground_truth" ){ 
+            ROS_WARN_STREAM("Skipping ground truth: " << gt_world2base.child_frame_id_ << " child/parent " << gt_world2base.frame_id_);
+            continue;
+          }
+          logTransform(gtt_out, gt_world2base, gt_world2base.stamp_.toSec()); 
+          //logTransform(et_out, world2base, gt_world2base.stamp_.toSec()); 
+        } 
+    }
+    ROS_INFO_COND(!gt.empty(), "Written logfiles ground_truth_trajectory.txt and estimated_trajectory.txt");
+    ROS_INFO_COND(gt.empty(),  "Written logfile estimated_trajectory.txt");
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
+}
+
+
 void GraphManager::sendAllClouds(){
-    std::clock_t starttime=std::clock();
+    struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
+    if (batch_cloud_pub_.getNumSubscribers() == 0){
+        ROS_WARN("No Subscribers: Sending of clouds cancelled");
+        return;
+    }
+
     ROS_INFO("Sending out all clouds");
     batch_processing_runs_ = true;
-    tf::Transform  world2cam;
-    //fill message
-    //rgbdslam::CloudTransforms msg;
-    ros::Rate r(5);
+    ros::Rate r(5); //slow down a bit, to allow for transmitting to and processing in other nodes
+
     for (unsigned int i = 0; i < optimizer_->vertices().size(); ++i) {
-        AIS::PoseGraph3D::Vertex* v = optimizer_->vertex(i);
+        g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(i));
         if(!v){ 
             ROS_ERROR("Nullpointer in graph at position %i!", i);
             continue;
         }
-        tf::Transform transform = hogman2TF(v->transformation);
 
-        tf::Transform cam2rgb;
-        cam2rgb.setRotation(tf::createQuaternionFromRPY(-1.57,0,-1.57));
-        cam2rgb.setOrigin(tf::Point(0,-0.04,0));
+        tf::Transform base2points = graph_[i]->getBase2PointsTransform();//get pose of base w.r.t current pc at capture time
+        printTransform("base2points", base2points);
+        tf::Transform computed_motion = g2o2TF(v->estimate());//get pose of point cloud w.r.t. first frame's pc
+        printTransform("computed_motion", computed_motion);
+        printTransform("init_base_pose_", init_base_pose_);
 
-        world2cam = cam2rgb*transform;
-        ros::Time time_of_transform = ros::Time::now();
+        tf::Transform world2base = init_base_pose_*base2points*computed_motion*base2points.inverse();
+        tf::Transform gt_world2base = graph_[i]->getGroundTruthTransform();//get mocap pose of base in map
+        tf::Transform err = gt_world2base.inverseTimes(world2base);
+        //TODO: Compute err from relative transformations betw. time steps
+
+        ros::Time now = ros::Time::now(); //makes sure things have a corresponding timestamp
         ROS_DEBUG("Sending out transform %i", i);
-        br_.sendTransform(tf::StampedTransform(world2cam, time_of_transform,
-                          "/openni_camera", "/batch_transform"));
+        printTransform("World->Base", world2base);
+        std::string fixed_frame = ParameterServer::instance()->get<std::string>("fixed_frame_name");
+        br_.sendTransform(tf::StampedTransform(world2base, now, fixed_frame, "/openni_camera"));
+        br_.sendTransform(tf::StampedTransform(err, now, fixed_frame, "/where_mocap_should_be"));
         ROS_DEBUG("Sending out cloud %i", i);
-        graph_[i]->publish("/batch_transform", time_of_transform);
+        //graph_[i]->publish("/batch_transform", now, batch_cloud_pub_);
+        graph_[i]->publish("/openni_rgb_optical_frame", now, batch_cloud_pub_);
+        //tf::Transform ground_truth_tf = graph_[i]->getGroundTruthTransform();
+        QString message;
+        Q_EMIT setGUIInfo(message.sprintf("Sending pointcloud and map transform (%i/%i) on topics %s and /tf", (int)i+1, (int)optimizer_->vertices().size(), ParameterServer::instance()->get<std::string>("individual_cloud_out_topic").c_str()) );
         r.sleep();
     }
 
     batch_processing_runs_ = false;
     Q_EMIT sendFinished();
-    ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "function runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
 }
 
 void GraphManager::setMaxDepth(float max_depth){
@@ -997,96 +1324,68 @@ void GraphManager::setMaxDepth(float max_depth){
 	ROS_INFO("Max Depth set to: %f", max_depth);
 }
 
-
-//From: /opt/ros/unstable/stacks/perception_pcl/pcl/src/pcl/registration/transforms.hpp
-//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-/** \brief Apply an affine transform defined by an Eigen Transform
-  * \param cloud_in the input point cloud
-  * \param cloud_to_append_to the transformed cloud will be appended to this one
-  * \param transform a tf::Transform stating the transformation of cloud_to_append_to relative to cloud_in
-  * \note The density of the point cloud is lost, since density implies that the origin is the point of view
-  * \note Can not(?) be used with cloud_in equal to cloud_to_append_to
-  */
-//template <typename PointT> void
-//transformAndAppendPointCloud (const pcl::PointCloud<PointT> &cloud_in, pcl::PointCloud<PointT> &cloud_to_append_to,
-//                              const tf::Transform transformation)
-void transformAndAppendPointCloud (const pointcloud_type &cloud_in, 
-                                   pointcloud_type &cloud_to_append_to,
-                                   const tf::Transform transformation, float Max_Depth)
-{
-    bool compact = !ParameterServer::instance()->get<bool>("preserve_raster_on_save");
-    Eigen::Matrix4f eigen_transform;
-    pcl_ros::transformAsMatrix(transformation, eigen_transform);
-    unsigned int cloud_to_append_to_original_size = cloud_to_append_to.size();
-    if(cloud_to_append_to.points.size() ==0){
-        cloud_to_append_to.header   = cloud_in.header;
-        cloud_to_append_to.width    = 0;
-        cloud_to_append_to.height   = 0;
-        cloud_to_append_to.is_dense = false;
+void GraphManager::cloudRendered(pointcloud_type const * pc) {
+  for(int i = graph_.size()-1; i >= 0;  i--){
+    if(graph_[i]->pc_col.get() == pc){
+      graph_[i]->clearPointCloud();
+      ROS_WARN("Cleared PointCloud after rendering to openGL list. It will not be available for save/send.");
+      return;
     }
-
-    ROS_INFO("Max_Depth = %f", Max_Depth);
-    ROS_INFO("cloud_to_append_to_original_size = %i", cloud_to_append_to_original_size);
-
-    //Append all points untransformed
-    cloud_to_append_to += cloud_in;
-
-    Eigen::Matrix3f rot   = eigen_transform.block<3, 3> (0, 0);
-    Eigen::Vector3f trans = eigen_transform.block<3, 1> (0, 3);
-    point_type origin = point_type();
-    origin.x = 0;
-    origin.y = 0;
-    origin.z = 0;
-    int j = 0;
-    for (size_t i = 0; i < cloud_in.points.size (); ++i)
-    { 
-     Eigen::Map<Eigen::Vector3f> p_in (&cloud_in.points[i].x, 3, 1);
-     Eigen::Map<Eigen::Vector3f> p_out (&cloud_to_append_to.points[j+cloud_to_append_to_original_size].x, 3, 1);
-     if(compact){ cloud_to_append_to.points[j+cloud_to_append_to_original_size] = cloud_in.points[i]; }
-     //filter out points with a range greater than the given Parameter or do nothing if negativ
-     if(Max_Depth >= 0){
-		 if(pcl::squaredEuclideanDistance(cloud_in.points[i], origin) > Max_Depth*Max_Depth){
-			p_out[0]= numeric_limits<float>::quiet_NaN();
-			p_out[1]= numeric_limits<float>::quiet_NaN();
-			p_out[2]= numeric_limits<float>::quiet_NaN();
-			if(!compact) j++; 
-			continue;
-		  }
-      }
-      if (pcl_isnan (cloud_in.points[i].x) || pcl_isnan (cloud_in.points[i].y) || pcl_isnan (cloud_in.points[i].z)){
-        if(!compact) j++;
-    	  continue;
-      }
-      p_out = rot * p_in + trans;
-      j++;
-    }
-    if(compact){
-      cloud_to_append_to.points.resize(j+cloud_to_append_to_original_size);
-      cloud_to_append_to.width    = 1;
-      cloud_to_append_to.height   = j+cloud_to_append_to_original_size;
-	}
+  }
 }
 
-bool GraphManager::overlappingViews(AISNavigation::LoadedEdge3D edge){
-    //opening angles
-   double alpha = 57.0/180.0*M_PI;
-   double beta = 47.0/180.0*M_PI; 
-   //assumes robot coordinate system (x is front, y is left, z is up)
-   Eigen::Matrix<double, 4,3> cam1;
-   cam1 <<  1.0, std::tan(alpha),  std::tan(beta),//upper left
-                                       1.0, -std::tan(alpha), std::tan(beta),//upper right
-                                       1.0, std::tan(alpha), -std::tan(beta),//lower left
-                                       1.0, -std::tan(alpha),-std::tan(beta);//lower right
-   //cam2 = hogman2Eigen(edge.mean) *
-   return false;
 
+void GraphManager::sanityCheck(float thresh){ 
+  thresh *=thresh; //squaredNorm
+  QMutexLocker locker(&optimizer_mutex);
+  EdgeSet::iterator edge_iter = optimizer_->edges().begin();
+  for(int i =0;edge_iter != optimizer_->edges().end(); edge_iter++, i++) {
+      g2o::EdgeSE3* myedge = dynamic_cast<g2o::EdgeSE3*>(*edge_iter);
+      Eigen::Vector3d ev = myedge->measurement().translation();
+      if(ev.squaredNorm() > thresh){
+        optimizer_->removeEdge(myedge); 
+      }
+  }
 }
-bool triangleRayIntersection(Eigen::Vector3d triangle1,Eigen::Vector3d triangle2, 
-                             Eigen::Vector3d ray_origin, Eigen::Vector3d ray){
-    Eigen::Matrix3d m;
-    m.col(2) = -ray;
-    m.col(0) = triangle1;
-    m.col(1) = triangle2;
-    Eigen::Vector3d lengths = m.inverse() * ray_origin;
-    return (lengths(0) < 0 && lengths(1) > 0 && lengths(2) > 0 );
+void GraphManager::pruneEdgesWithErrorAbove(float thresh){
+  QMutexLocker locker(&optimizer_mutex);
+  EdgeSet::iterator edge_iter = optimizer_->edges().begin();
+  for(int i =0;edge_iter != optimizer_->edges().end(); edge_iter++, i++) {
+      g2o::EdgeSE3* myedge = dynamic_cast<g2o::EdgeSE3*>(*edge_iter);
+      g2o::EdgeSE3::ErrorVector ev = myedge->error();
+      if(ev.squaredNorm() > thresh){
+        optimizer_->removeEdge(myedge); 
+      }
+  }
+}
+void GraphManager::printEdgeErrors(QString filename){
+  QMutexLocker locker(&optimizer_mutex);
+  std::fstream filestr;
+  filestr.open (qPrintable(filename),  std::fstream::out );
+
+  EdgeSet::iterator edge_iter = optimizer_->edges().begin();
+  for(int i =0;edge_iter != optimizer_->edges().end(); edge_iter++, i++) {
+      g2o::EdgeSE3* myedge = dynamic_cast<g2o::EdgeSE3*>(*edge_iter);
+      g2o::EdgeSE3::ErrorVector ev = myedge->error();
+      ROS_INFO_STREAM("Error Norm for edge " << i << ": " << ev.squaredNorm());
+      filestr << "Error for edge " << i << ": " << ev.squaredNorm() << std::endl;
+  }
+  filestr.close();
+}
+
+void GraphManager::finishUp(){
+  someone_is_waiting_for_me_ = true;
+}
+bool GraphManager::isBusy(){
+  return (batch_processing_runs_ || process_node_runs_ );
+}
+
+double GraphManager::geodesicDiscount(g2o::HyperDijkstra& hypdij, const MatchingResult& mr){
+    //Discount by geodesic distance to root node
+    const g2o::HyperDijkstra::AdjacencyMap am = hypdij.adjacencyMap();
+    g2o::VertexSE3* older_vertex = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(mr.edge.id1));
+    double discount_factor = am.at(older_vertex).distance();
+    discount_factor = discount_factor > 0.0? 1.0/discount_factor : 1.0;//avoid inf
+    ROS_INFO("Discount weight for connection to Node %i = %f", mr.edge.id1, discount_factor);
+    return discount_factor;
 }

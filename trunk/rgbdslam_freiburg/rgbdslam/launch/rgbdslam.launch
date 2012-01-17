@@ -1,14 +1,19 @@
 <launch>
-  <!--node pkg="rviz" type="rviz" name="rviz" args="-d $(find rgbdslam)/launch/rviz_config.vcg" respawn="false" output="log" > </node-->
-<node pkg="rgbdslam" type="rgbdslam" name="rgbdslam" cwd="node" required="false" output="log" > 
-  	<param name="config/topic_sampled_cloud" value="2800"/>
-  	<param name="config/adjuster_max_keypoints" value="1500"/>
-  	<param name="config/min_rotation_degree" value="3"/>
-  	<param name="config/min_translation_meter" value="0.05"/>
-  	<param name="config/connectivity" value="150"/>
-  	<param name="config/min_matches" value="201"/>
-  	<param name="config/max_dist_for_inliers" value="0.05"/>
-</node>
-  <!--node pkg="rxtools" type="rxconsole" name="rxconsole" output="log" > </node-->
-  <!--include file="$(find openni_camera)/launch/kinect_frames.launch"/-->
+  <node pkg="rgbdslam" type="rgbdslam" name="rgbdslam" cwd="node" required="false" output="log" > 
+    <!-- see rgbslam_sample_config.launch for all available parameters and their default values -->
+      <param name="config/topic_image_mono"              value="/camera/rgb/image_color"/>
+      <param name="config/wide_topic"                    value=""/>;
+      <param name="config/wide_cloud_topic"              value=""/>;
+      <param name="config/drop_async_frames"             value="true"/> <!-- Check association of depth and visual image, reject if not in sync -->
+      <param name="config/feature_detector_type"         value="SURF"/><!-- If SIFTGPU is enabled in CMakeLists.txt, use SURF here -->
+      <param name="config/feature_extractor_type"        value="SURF"/><!-- If SIFTGPU is enabled in CMakeLists.txt, use SURF here -->
+      <param name="config/matcher_type"                  value="FLANN"/> <!-- FLANN (not avail for ORB features), SIFTGPU (only for SIFTGPU detector)  or BRUTEFORCE-->
+      <param name="config/max_keypoints"                 value="2000"/><!-- Extract no more than this many keypoints (not honored by SIFTGPU)-->
+      <param name="config/min_keypoints"                 value="1600"/><!-- Extract no less than this many ... -->
+      <param name="config/optimizer_skip_step"           value="5"/><!-- optimize every n-th frame -->
+      <param name="config/store_pointclouds"             value="true"/> <!-- if, e.g., only trajectory is required, setting this to false saves lots of memory -->
+      <param name="config/individual_cloud_out_topic"    value="/rgbdslam/batch_clouds"/>;
+      <param name="/config/use_gui" value="true"/>
+    <!-- see rgbslam_sample_config.launch for all available parameters and their default values -->
+  </node>
 </launch>

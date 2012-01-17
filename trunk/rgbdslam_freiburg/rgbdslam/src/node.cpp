@@ -21,12 +21,12 @@
 #include <Eigen/Geometry>
 #include "pcl/ros/conversions.h"
 #include <pcl/common/transformation_from_correspondences.h>
-#include <opencv2/highgui/highgui.hpp>
+//#include <opencv2/highgui/highgui.hpp>
 #include <qtconcurrentrun.h>
 #include <QtConcurrentMap> 
 
 #ifdef USE_SIFT_GPU
-#include "sift_gpu_feature_detector.h"
+#include "sift_gpu_wrapper.h"
 #endif
 
 //#include <math.h>
@@ -36,206 +36,267 @@
 #endif
 
 #ifdef USE_ICP_CODE
-#include "../gicp/transform.h"
+#include "../external/gicp/transform.h"
 #endif
-
 
 //#include <iostream>
 #include <Eigen/StdVector>
+#include "misc.h"
+#include <pcl/filters/voxel_grid.h>
+#include <opencv/highgui.h>
 
-Transformation3 eigen2Hogman(const Eigen::Matrix4f eigen_mat) {
-  std::clock_t starttime=std::clock();
+QMutex Node::gicp_mutex;
+QMutex Node::siftgpu_mutex;
 
-  Eigen::Affine3f eigen_transform(eigen_mat);
-  Eigen::Quaternionf eigen_quat(eigen_transform.rotation());
-  Vector3 translation(eigen_mat(0, 3), eigen_mat(1, 3), eigen_mat(2, 3));
-  Quaternion rotation(eigen_quat.x(), eigen_quat.y(), eigen_quat.z(),
-      eigen_quat.w());
-  Transformation3 result(translation, rotation);
-
-  ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << "runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
-  return result;
-}
-
-Node::Node(ros::NodeHandle& nh, const cv::Mat& visual,
-    cv::Ptr<cv::FeatureDetector> detector,
-    cv::Ptr<cv::DescriptorExtractor> extractor,
-    cv::Ptr<cv::DescriptorMatcher> matcher,
-    const sensor_msgs::PointCloud2ConstPtr point_cloud,
-    const cv::Mat& detection_mask)
-: id_(0), 
-flannIndex(NULL),
-matcher_(matcher)
+Node::Node(const cv::Mat& visual, 
+           const cv::Mat& depth,
+           const cv::Mat& detection_mask,
+           const sensor_msgs::CameraInfoConstPtr& cam_info, 
+           std_msgs::Header depth_header,
+           cv::Ptr<cv::FeatureDetector> detector,
+           cv::Ptr<cv::DescriptorExtractor> extractor) :
+  id_(0), 
+  pc_col(new pointcloud_type()),
+  flannIndex(NULL),
+  base2points_(tf::Transform::getIdentity(), depth_header.stamp, ParameterServer::instance()->get<std::string>("base_frame_name"), depth_header.frame_id),
+  ground_truth_transform_(tf::Transform::getIdentity(), depth_header.stamp, ParameterServer::instance()->get<std::string>("ground_truth_frame_name"), ParameterServer::instance()->get<std::string>("base_frame_name")),
+  initial_node_matches_(0)
 {
-#ifdef USE_ICP_CODE
-  gicp_initialized = false;
-#endif
-  std::clock_t starttime=std::clock();
+  ParameterServer* ps = ParameterServer::instance();
+  pc_col->header = depth_header;
+  struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
 
 #ifdef USE_SIFT_GPU
-  SiftGPUFeatureDetector* siftgpu = SiftGPUFeatureDetector::GetInstance();
-  float* descriptors = siftgpu->detect(visual, feature_locations_2d_);
-  if (descriptors == NULL) {
-    ROS_FATAL("Can't run SiftGPU");
-  }
-#else
-  ROS_FATAL_COND(detector.empty(), "No valid detector!");
-  detector->detect( visual, feature_locations_2d_, detection_mask);// fill 2d locations
+  std::vector<float> descriptors;
+  if(ps->get<std::string>("feature_detector_type") == "SIFTGPU"){
+    SiftGPUWrapper* siftgpu = SiftGPUWrapper::getInstance();
+    siftgpu->detect(visual, feature_locations_2d_, descriptors);
+    ROS_FATAL_COND(descriptors.size()==0, "Can't run SiftGPU");
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "Feature Detection and Descriptor Extraction runtime: "<< elapsed <<" s");
+  } else 
 #endif
-
-  ROS_INFO("Feature detection and descriptor extraction runtime: %f", ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC);
-  ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "Feature detection runtime: " << ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC );
-
-  /*
-    if (id_  == 0)
-        cloud_pub_ = nh_->advertise<sensor_msgs::PointCloud2>("clouds_from_node_base",10);
-    else{
-   */
-  cloud_pub_ = nh.advertise<sensor_msgs::PointCloud2>("/rgbdslam/batch_clouds",20);
-  //   cloud_pub_ransac = nh_->advertise<sensor_msgs::PointCloud2>("clouds_from_node_current_ransac",10);
-  //} */
-
-  // get pcl::Pointcloud to extract depthValues a pixel positions
-  std::clock_t starttime5=std::clock();
-  // TODO: If batch sending/saving of clouds would be removed, the pointcloud wouldn't have to be saved
-  // which would slim down the Memory requirements
-  pcl::fromROSMsg(*point_cloud,pc_col);
-  ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime5) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "pc2->pcl conversion runtime: " << ( std::clock() - starttime5 ) / (double)CLOCKS_PER_SEC );
+  {
+    ROS_FATAL_COND(detector.empty(), "No valid detector!");
+    detector->detect( visual, feature_locations_2d_, detection_mask);// fill 2d locations
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "Feature Detection runtime: "<< elapsed <<" s");
+  }
 
   // project pixels to 3dPositions and create search structures for the gicp
 #ifdef USE_SIFT_GPU
-  // removes also unused descriptors from the descriptors matrix
-  // build descriptor matrix
-  projectTo3DSiftGPU(feature_locations_2d_, feature_locations_3d_, pc_col, descriptors, feature_descriptors_); //takes less than 0.01 sec
-
-  if (descriptors != NULL) delete descriptors;
-
-#else
-  projectTo3D(feature_locations_2d_, feature_locations_3d_, pc_col); //takes less than 0.01 sec
+  if(ps->get<std::string>("feature_detector_type") == "SIFTGPU"){
+    projectTo3DSiftGPU(feature_locations_2d_, feature_locations_3d_, depth, cam_info, descriptors, feature_descriptors_); 
+  }
+  else
 #endif
-
-  // projectTo3d need a dense cloud to use the points.at(px.x,px.y)-Call
-#ifdef USE_ICP_CODE
-  std::clock_t starttime4=std::clock();
-  createGICPStructures(); 
-  ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime4) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "gicp runtime: " << ( std::clock() - starttime4 ) / (double)CLOCKS_PER_SEC );
-#endif
-
-  std::clock_t starttime2=std::clock();
-#ifndef USE_SIFT_GPU
-//  ROS_INFO("Use extractor");
-  //cv::Mat topleft, topright;
-  //topleft = visual.colRange(0,visual.cols/2+50);
-  //topright= visual.colRange(visual.cols/2+50, visual.cols-1);
-	//std::vector<cv::KeyPoint> kp1, kp2; 
-  //extractor->compute(topleft, kp1, feature_descriptors_); //fill feature_descriptors_ with information 
-  extractor->compute(visual, feature_locations_2d_, feature_descriptors_); //fill feature_descriptors_ with information 
-#endif
+  {
+    projectTo3D(feature_locations_2d_, feature_locations_3d_, depth, cam_info);
+    struct timespec starttime2; clock_gettime(CLOCK_MONOTONIC, &starttime2);
+    extractor->compute(visual, feature_locations_2d_, feature_descriptors_); //fill feature_descriptors_ with information 
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime2.tv_sec); elapsed += (finish.tv_nsec - starttime2.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "Feature Extraction runtime: "<< elapsed <<" s");
+  }
   assert(feature_locations_2d_.size() == feature_locations_3d_.size());
-  ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime2) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "Feature extraction runtime: " << ( std::clock() - starttime2 ) / (double)CLOCKS_PER_SEC );
-
-  ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "constructor runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
-}
-
-Node::~Node(){
-  if(flannIndex)
-    delete flannIndex;
-}
-
-void Node::publish(const char* frame, ros::Time timestamp){
-  if (cloud_pub_.getNumSubscribers() > 0){
-    sensor_msgs::PointCloud2 cloudMessage;
-    pcl::toROSMsg(pc_col,cloudMessage);
-    cloudMessage.header.frame_id = frame;
-    cloudMessage.header.stamp = timestamp;
-    cloud_pub_.publish(cloudMessage);
-    ROS_INFO("Pointcloud with id %i sent with frame %s", id_, frame);
-  } else 
-    ROS_INFO("Sending of point cloud requested, but no subscriber. Ignored");
-}
-
+  ROS_INFO_NAMED("statistics", "Feature Count of Node:\t%d", (int)feature_locations_2d_.size());
+  size_t max_keyp = ps->get<int>("max_keypoints");
+  if(feature_locations_2d_.size() > max_keyp) {
+    feature_locations_2d_.resize(max_keyp);
+    feature_locations_3d_.resize(max_keyp);
+    feature_descriptors_ = feature_descriptors_.rowRange(0,max_keyp-1);
+  }
+  //computeKeypointDepthStats(depth, feature_locations_2d_);
 
 #ifdef USE_ICP_CODE
-bool Node::getRelativeTransformationTo_ICP_code(const Node* target_node,Eigen::Matrix4f& transformation,
-    const Eigen::Matrix4f* initial_transformation){
-  //std::clock_t starttime_icp = std::clock();
-  dgc_transform_t initial;
+  if(ps->get<bool>("use_icp")){
+    ROS_ERROR("ICP cannot be used without PointCloud. Wrong Node Constructor");
+  }
+  gicp_initialized = false;
+  gicp_point_set_ = NULL;
+#endif
+  clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
 
-  // use optional matrix as first guess in icp
-  if (initial_transformation == NULL){
-    gicpSetIdentity(initial); 
-  }else {
-    Eigen2GICP(*initial_transformation,initial);
+}
+
+
+
+
+
+
+
+
+
+
+
+Node::Node(const cv::Mat visual,
+           cv::Ptr<cv::FeatureDetector> detector,
+           cv::Ptr<cv::DescriptorExtractor> extractor,
+           pointcloud_type::Ptr point_cloud,
+           const cv::Mat detection_mask) : 
+  id_(0),
+  pc_col(point_cloud),
+  flannIndex(NULL),
+  base2points_(tf::Transform::getIdentity(), point_cloud->header.stamp,ParameterServer::instance()->get<std::string>("base_frame_name"), point_cloud->header.frame_id),
+  ground_truth_transform_(tf::Transform::getIdentity(), point_cloud->header.stamp, ParameterServer::instance()->get<std::string>("ground_truth_frame_name"), ParameterServer::instance()->get<std::string>("base_frame_name")),
+  initial_node_matches_(0)
+{
+  //cv::namedWindow("matches");
+  ParameterServer* ps = ParameterServer::instance();
+
+  ROS_INFO_STREAM("Construction of Node with " << ps->get<std::string>("feature_detector_type") << " Features");
+  struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
+
+#ifdef USE_SIFT_GPU
+  std::vector<float> descriptors;
+  if(ps->get<std::string>("feature_detector_type") == "SIFTGPU"){
+    SiftGPUWrapper* siftgpu = SiftGPUWrapper::getInstance();
+    siftgpu->detect(visual, feature_locations_2d_, descriptors);
+    ROS_FATAL_COND(descriptors.size() ==0, "Can't run SiftGPU");
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "Feature Detection and Descriptor Extraction runtime: "<< elapsed <<" s");
+  } else 
+#endif
+  if(ps->get<std::string>("feature_detector_type") != "GICP")
+  {
+    ROS_FATAL_COND(detector.empty(), "No valid detector!");
+    detector->detect( visual, feature_locations_2d_, detection_mask);// fill 2d locations
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "Feature Detection runtime: "<< elapsed <<" s");
   }
 
+  // project pixels to 3dPositions and create search structures for the gicp
+#ifdef USE_SIFT_GPU
+  if(ps->get<std::string>("feature_detector_type") == "SIFTGPU")
+  {
+    // removes also unused descriptors from the descriptors matrix
+    // build descriptor matrix and sets siftgpu_descriptors!
+    projectTo3DSiftGPU(feature_locations_2d_, feature_locations_3d_, pc_col, descriptors, feature_descriptors_); //takes less than 0.01 sec
+  }
+  else 
+#endif
+  if(ps->get<std::string>("feature_detector_type") != "GICP")
+  {
+    projectTo3D(feature_locations_2d_, feature_locations_3d_, pc_col); //takes less than 0.01 sec
+    // projectTo3d need a dense cloud to use the points.at(px.x,px.y)-Call
+    struct timespec starttime2; clock_gettime(CLOCK_MONOTONIC, &starttime2);
+    extractor->compute(visual, feature_locations_2d_, feature_descriptors_); //fill feature_descriptors_ with information 
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime2.tv_sec); elapsed += (finish.tv_nsec - starttime2.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "Feature Extraction runtime: "<< elapsed <<" s");
+  }
+
+  if(ps->get<std::string>("feature_detector_type") != "GICP")
+  {
+    assert(feature_locations_2d_.size() == feature_locations_3d_.size());
+    ROS_INFO_NAMED("statistics", "Feature Count of Node:\t%d", (int)feature_locations_2d_.size());
+    size_t max_keyp = ps->get<int>("max_keypoints");
+    if(feature_locations_2d_.size() > max_keyp) {
+      feature_locations_2d_.resize(max_keyp);
+      feature_locations_3d_.resize(max_keyp);
+      feature_descriptors_ = feature_descriptors_.rowRange(0,max_keyp-1);
+    }
+  }
+
+#ifdef USE_ICP_CODE
+  gicp_initialized = false;
+  gicp_point_set_ = NULL;
+  if(!ps->get<bool>("store_pointclouds") && ps->get<bool>("use_icp")) 
+  {//if clearing out point clouds, the icp structure needs to be built before
+    gicp_mutex.lock();
+    gicp_point_set_ = this->getGICPStructure();
+    gicp_mutex.unlock();
+  }
+#endif
+
+  if((!ps->get<bool>("use_glwidget") ||
+      !ps->get<bool>("use_gui")) &&
+     !ps->get<bool>("store_pointclouds"))
+  {
+    ROS_WARN("Clearing out points");
+    this->clearPointCloud();
+  } else if(ps->get<double>("voxelfilter_size") > 0.0) {
+    double vfs = ps->get<double>("voxelfilter_size");
+    pcl::VoxelGrid<point_type> sor;
+    sor.setLeafSize(vfs,vfs,vfs);
+    pointcloud_type::ConstPtr const_cloud_ptr = boost::make_shared<pointcloud_type> (*pc_col);                                                                 
+    sor.setInputCloud (const_cloud_ptr);
+    sor.filter (*pc_col);
+  }
+  clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
+
+}
+
+Node::~Node() {
+    if (ParameterServer::instance()->get<std::string> ("feature_detector_type").compare("ORB") != 0) {
+        if (flannIndex)
+            delete flannIndex;
+    }
+}
+
+void Node::setGroundTruthTransform(tf::StampedTransform gt){
+    ground_truth_transform_ = gt;
+}
+void Node::setBase2PointsTransform(tf::StampedTransform b2p){
+    base2points_ = b2p;
+}
+tf::StampedTransform Node::getGroundTruthTransform(){
+    return ground_truth_transform_;
+}
+tf::StampedTransform Node::getBase2PointsTransform(){
+    return base2points_;
+}
+
+void Node::publish(const char* frame, ros::Time timestamp, ros::Publisher pub){
+    sensor_msgs::PointCloud2 cloudMessage;
+    pcl::toROSMsg((*pc_col),cloudMessage);
+    cloudMessage.header.frame_id = frame;
+    cloudMessage.header.stamp = timestamp;
+    pub.publish(cloudMessage);
+    ROS_INFO("Pointcloud with id %i sent with frame %s", id_, frame);
+}
+
+#ifdef USE_ICP_CODE
+bool Node::getRelativeTransformationTo_ICP_code(const Node* target_node,
+                                                Eigen::Matrix4f& transformation,
+                                                const Eigen::Matrix4f& initial_transformation)
+{
+  struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
+  dgc_transform_t initial;
+  Eigen2GICP(initial_transformation,initial);
 
   dgc_transform_t final_trafo;
   dgc_transform_identity(final_trafo);
 
-
-  assert(gicp_initialized && target_node->gicp_initialized);
-
-  unsigned int iterations = target_node->gicp_point_set->AlignScan(this->gicp_point_set, initial, final_trafo, gicp_d_max);
-
-
-  GICP2Eigen(final_trafo,transformation);
-
-  //ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime_icp) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "ICP 2 runtime: " << ( std::clock() - starttime_icp ) / (double)CLOCKS_PER_SEC );
-
-  return iterations < gicp_max_iterations;
-
-}
-
-# endif
-
-#ifdef USE_ICP_BIN
-bool Node::getRelativeTransformationTo_ICP_bin(const Node* target_node,
-    Eigen::Matrix4f& transformation,
-    const Eigen::Matrix4f* initial_transformation){
-  std::clock_t starttime_icp = std::clock();
-
-  bool converged;
-
-  if (initial_transformation != NULL)
+  gicp_mutex.lock();
+	dgc::gicp::GICPPointSet* gicp_point_set = this->getGICPStructure();
+  ROS_INFO("this'  (%d) Point Set: %d", this->id_, gicp_point_set->Size());
+	dgc::gicp::GICPPointSet* target_gicp_point_set = target_node->getGICPStructure();
+  ROS_INFO("others (%d) Point Set: %d", target_node->id_, target_gicp_point_set->Size());
+  int iterations = gicp_max_iterations;
+  if(gicp_point_set->Size() > Node::gicp_min_point_cnt && 
+     target_gicp_point_set->Size() > Node::gicp_min_point_cnt)
   {
-    pointcloud_type pc2;
-    pcl::transformPointCloud(pc_col,pc2,*initial_transformation);
-    converged = gicpfallback(pc2,target_node->pc_col, transformation);
+   iterations = target_gicp_point_set->AlignScan(gicp_point_set, initial, final_trafo, gicp_d_max);
+   GICP2Eigen(final_trafo,transformation);
+  } else {
+    ROS_WARN("GICP Point Sets not big enough. Skipping ICP");
   }
-  else {
-    converged = gicpfallback(pc_col,target_node->pc_col, transformation); }
+  gicp_mutex.unlock();
 
-  // Paper
-  // ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime_icp) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "ICP runtime: " << ( std::clock() - starttime_icp ) / (double)CLOCKS_PER_SEC );
 
-  return converged;
-}
-#endif
-//#ifndef USE_ICP_CODE
-//#ifndef USE_ICP_BIN
-//bool Node::getRelativeTransformationTo_ICP(const Node* target_node,
-//    Eigen::Matrix4f& transformation,
-//    const Eigen::Matrix4f* initial_transformation){
-//  ROS_ERROR("ICP is called but not available, as compilation did not include it");
-//  return false;
-//}
-//#endif
-//#endif
-
-// build search structure for descriptor matching
-void Node::buildFlannIndex() {
-  //std::clock_t starttime=std::clock();
-  // use same type as in http://opencv-cocoa.googlecode.com/svn/trunk/samples/c/find_obj.cpp
-  flannIndex = new cv_flannIndex(feature_descriptors_, cv::flann::KDTreeIndexParams(4));
-  ROS_DEBUG("Built flannIndex (address %p) for Node %i", flannIndex, this->id_);
-  // ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > 0.001, "timings", "buildFlannIndex runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
+  clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
+  return iterations <= gicp_max_iterations;
 }
 
-
-#ifdef USE_ICP_CODE
-void Node::createGICPStructures(unsigned int max_count){
-
-  gicp_point_set = new dgc::gicp::GICPPointSet();
+void Node::clearGICPStructure() const
+{
+    gicp_mutex.lock();
+    delete gicp_point_set_; gicp_point_set_ = NULL;
+    gicp_mutex.unlock();
+}
+dgc::gicp::GICPPointSet* Node::getGICPStructure(unsigned int max_count) const
+{
+  struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
+  if(max_count == 0) max_count = ParameterServer::instance()->get<int>("gicp_max_cloud_size");
+  //Use Cache
+  if(gicp_point_set_ != NULL){
+    return gicp_point_set_;
+  }
+  
+  dgc::gicp::GICPPointSet* gicp_point_set = new dgc::gicp::GICPPointSet();
 
   dgc::gicp::GICPPoint g_p;
   g_p.range = -1;
@@ -245,88 +306,228 @@ void Node::createGICPStructures(unsigned int max_count){
     }
   }
 
-  int step = 1;
-  if (pc_col.points.size()>max_count)
-    step = ceil(pc_col.points.size()*1.0/max_count);
-
-  int cnt = 0;
-  for (unsigned int i=0; i<pc_col.points.size(); i++ ){
-    point_type  p = pc_col.points.at(i);
-    if (!(isnan(p.x) || isnan(p.y) || isnan(p.z))) {
-      // add points to pointset for icp
-      if (cnt++%step == 0){
-        g_p.x=p.x;
-        g_p.y=p.y;
-        g_p.z=p.z;
-        gicp_point_set->AppendPoint(g_p);
-      }
+  std::vector<dgc::gicp::GICPPoint> non_NaN;
+  for (unsigned int i=0; i<(*pc_col).points.size(); i++ ){
+    point_type&  p = (*pc_col).points.at(i);
+    if (!isnan(p.z)) { // add points to candidate pointset for icp
+      g_p.x=p.x;
+      g_p.y=p.y;
+      g_p.z=p.z;
+      non_NaN.push_back(g_p);
     }
   }
-  ROS_WARN("gicp_point_set.Size() %i", gicp_point_set->Size() );
+  float step = non_NaN.size()/static_cast<float>(max_count);
+  step =  step < 1.0 ? 1.0 : step; //only skip, don't use points more than once
+  for (float i=0; i<non_NaN.size(); i+=step ){
+    gicp_point_set->AppendPoint(non_NaN[static_cast<unsigned int>(i)]);
+  }
+  ROS_INFO("GICP point set size: %i", gicp_point_set->Size() );
+  
+  if(gicp_point_set->Size() > Node::gicp_min_point_cnt){
+    // build search structure for gicp:
+    gicp_point_set->SetDebug(true);
+    gicp_point_set->SetGICPEpsilon(gicp_epsilon);
+    gicp_point_set->BuildKDTree();
+    gicp_point_set->ComputeMatrices();
+    gicp_point_set->SetMaxIterationInner(8); // as in test_gicp->cpp
+    gicp_point_set->SetMaxIteration(gicp_max_iterations);
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
+  }
+  else
+  {
+    ROS_WARN("GICP point set too small, this node will not be algined with GICP!");
+  }
+  //ROS_INFO_STREAM("time for creating the structure: " << ((std::clock()-starttime_gicp*1.0) / (double)CLOCKS_PER_SEC));
+  //ROS_INFO_STREAM("current: " << std::clock() << " " << "start_time: " << starttime_gicp);
 
-
-  std::clock_t starttime_gicp = std::clock();
-  // build search structure for gicp:
-  gicp_point_set->SetDebug(false);
-  gicp_point_set->SetGICPEpsilon(gicp_epsilon);
-  gicp_point_set->BuildKDTree();
-  gicp_point_set->ComputeMatrices();
-  gicp_point_set->SetMaxIterationInner(8); // as in test_gicp->cpp
-  gicp_point_set->SetMaxIteration(gicp_max_iterations);
-  ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime_gicp) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "function runtime to create gicp-Structures: "<< ( std::clock() - starttime_gicp ) / (double)CLOCKS_PER_SEC  <<"sec");
-
-  ROS_INFO_STREAM("time for creating the structure: " << ((std::clock()-starttime_gicp*1.0) / (double)CLOCKS_PER_SEC));
-  ROS_INFO_STREAM("current: " << std::clock() << " " << "start_time: " << starttime_gicp);
-
-  gicp_initialized = true;
-
+  gicp_point_set_ = gicp_point_set;
+  clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
+  return gicp_point_set;
 }
 #endif
 
-//TODO: This function seems to be resistant to paralellization probably due to knnSearch
-int Node::findPairsFlann(const Node* other, vector<cv::DMatch>* matches) const {
-  std::clock_t starttime=std::clock();
+#ifdef USE_ICP_BIN
+bool Node::getRelativeTransformationTo_ICP_bin(const Node* target_node,
+    Eigen::Matrix4f& transformation,
+    const Eigen::Matrix4f* initial_transformation){
+  std::clock_t starttime_icp = std::clock();
+
+  bool converged;
+
+  pointcloud_type::Ptr target_cloud = target_node->pc_col;
+  if (initial_transformation != NULL)
+  {
+    pointcloud_type pc2;
+    pcl::transformPointCloud((*pc_col),pc2,*initial_transformation);
+    converged = gicpfallback(pc2, *target_cloud, transformation);
+  }
+  else {
+    converged = gicpfallback((*pc_col),*target_cloud, transformation); }
+
+  // Paper
+  // clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
+
+  return converged;
+}
+#endif
+
+// build search structure for descriptor matching
+void Node::buildFlannIndex() {
+  if (ParameterServer::instance()->get<std::string> ("matcher_type") == "FLANN" 
+      && ParameterServer::instance()->get<std::string> ("feature_detector_type") != "GICP"
+      && ParameterServer::instance()->get<std::string> ("feature_extractor_type") != "ORB")
+  {
+    struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
+    //KDTreeIndexParams When passing an object of this type the index constructed will 
+    //consist of a set of randomized kd-trees which will be searched in parallel.
+    flannIndex = new cv::flann::Index(feature_descriptors_, cv::flann::KDTreeIndexParams(16));
+    ROS_DEBUG_NAMED(__FILE__, "Built flannIndex (address %p) for Node %i", flannIndex, this->id_);
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
+  }
+}
+
+
+
+//TODO: This function seems to be resistant to parallelization probably due to knnSearch
+unsigned int Node::findPairsFlann(const Node* other, std::vector<cv::DMatch>* matches) const 
+{
+  struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
   assert(matches->size()==0);
-
-  if (other->flannIndex == NULL) {
-    ROS_FATAL("Node %i in findPairsFlann: flann Index of Node %i was not initialized", this->id_, other->id_);
-    return -1;
-  }
-
-  // number of neighbours found (has to be two, see l. 57)
+  // number of neighbours found (two, to compare the best matches for distinctness
   const int k = 2;
+  //unsigned int one_nearest_neighbour = 0, two_nearest_neighbours = 0;
 
-  // compare
-  // http://opencv-cocoa.googlecode.com/svn/trunk/samples/c/find_obj.cpp
-  cv::Mat indices(feature_descriptors_.rows, k, CV_32S);
-  cv::Mat dists(feature_descriptors_.rows, k, CV_32F);
+  // number of neighbors found (has to be two, see l. 57)
+  double sum_distances = 0.0;
+  ParameterServer* ps = ParameterServer::instance();
+  //const int min_kp = ps->get<int> ("min_keypoints");
 
-  //ROS_INFO("find flann pairs: feature_descriptor (rows): %i", feature_descriptors_.rows);
-
-  // get the best two neighbours
-  other->flannIndex->knnSearch(feature_descriptors_, indices, dists, k,
-      cv::flann::SearchParams(64));
-
-  int* indices_ptr = indices.ptr<int> (0);
-  float* dists_ptr = dists.ptr<float> (0);
-
-  cv::DMatch match;
-  for (int i = 0; i < indices.rows; ++i) {
-    if (dists_ptr[2 * i] < 0.6 * dists_ptr[2 * i + 1]) {
-      match.queryIdx = i;
-      match.trainIdx = indices_ptr[2 * i];
-      match.distance = dists_ptr[2 * i];
-
-      assert(match.trainIdx < other->feature_descriptors_.rows);
-      assert(match.queryIdx < feature_descriptors_.rows);
-
-      matches->push_back(match);
-    }
+  //using siftgpu, if available and wanted
+  if(ps->get<std::string>("feature_detector_type") == "GICP"){
+    return 0;
   }
+#ifdef USE_SIFT_GPU
+  if (ps->get<std::string> ("matcher_type") == "SIFTGPU") {
+    siftgpu_mutex.lock();
+    sum_distances = SiftGPUWrapper::getInstance()->match(siftgpu_descriptors, feature_descriptors_.rows, other->siftgpu_descriptors, other->feature_descriptors_.rows, matches);
+    siftgpu_mutex.unlock();
+  }
+  else
+#endif
+  //using BruteForceMatcher for ORB features
+  if (ps->get<std::string> ("matcher_type") == "BRUTEFORCE" || 
+      ps->get<std::string> ("feature_extractor_type") == "ORB")
+  {
+    cv::Ptr<cv::DescriptorMatcher> matcher;
+    std::string brute_force_type("BruteForce"); //L2 per default
+    if(ps->get<std::string> ("feature_extractor_type") == "ORB"){
+      brute_force_type.append("-HammingLUT");
+    }
+    matcher = cv::DescriptorMatcher::create(brute_force_type);
+    std::vector< std::vector<cv::DMatch> > bruteForceMatches;
+    matcher->knnMatch(feature_descriptors_, other->feature_descriptors_, bruteForceMatches, k);
+    double dist_ratio_fac = ps->get<double>("nn_distance_ratio");
+    //if ((int)bruteForceMatches.size() < min_kp) dist_ratio_fac = 1.0; //if necessary use possibly bad descriptors
+    for (unsigned int i = 0; i < bruteForceMatches.size(); i++) {
+        cv::DMatch m1 = bruteForceMatches[i][0];
+        cv::DMatch m2 = bruteForceMatches[i][1];
+        if (m1.distance < dist_ratio_fac * m2.distance) {//this check seems crucial to matching quality
+            m1.distance = 1; //nearest neighbour
+            sum_distances += m1.distance;
+            matches->push_back(m1);
+            //one_nearest_neighbour++;
+        } /*else {
+            m1.distance = 1; //nearest neighbour
+            m2.distance = 2; //second nearest neighbour
+            matches->push_back(m1);
+            matches->push_back(m2);
+            sum_distances += m1.distance + m2.distance;
+            two_nearest_neighbours+=2;
+        }*/
+
+    }
+    //matcher->match(feature_descriptors_, other->feature_descriptors_, *matches);
+  } 
+  else if (ps->get<std::string>("matcher_type") == "FLANN" && 
+           ps->get<std::string>("feature_extractor_type") != "ORB")
+  {
+    if (other->flannIndex == NULL) {
+        ROS_FATAL("Node %i in findPairsFlann: flann Index of Node %i was not initialized", this->id_, other->id_);
+        return -1;
+    }
+    int start_feature = 0;
+    int num_segments = feature_descriptors_.rows / (ps->get<int>("sufficient_matches")+100.0); //compute number of segments
+    if(num_segments == 0) num_segments=1;
+    int num_features = feature_descriptors_.rows / num_segments;                               //compute features per chunk
+    for(int seg = 1; start_feature < feature_descriptors_.rows && seg <= num_segments;  seg++){ //search for matches chunkwise
+      // compare
+      // http://opencv-cocoa.googlecode.com/svn/trunk/samples/c/find_obj.cpp
+      cv::Mat indices(num_features, k, CV_32S);
+      cv::Mat dists(num_features, k, CV_32F);
+      cv::Mat relevantDescriptors = feature_descriptors_.rowRange(start_feature, start_feature+num_features);
+
+      // get the best two neighbors
+      struct timespec flannstarttime, flannfinish; double flannelapsed; clock_gettime(CLOCK_MONOTONIC, &flannstarttime);
+      other->flannIndex->knnSearch(relevantDescriptors, indices, dists, k, cv::flann::SearchParams(64));
+      clock_gettime(CLOCK_MONOTONIC, &flannfinish); flannelapsed = (flannfinish.tv_sec - flannstarttime.tv_sec); flannelapsed += (flannfinish.tv_nsec - flannstarttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_NAMED("timings", "Flann knnsearch runtime: "<< flannelapsed <<" s");
+
+      //64: The number of times the tree(s) in the index should be recursively traversed. A higher value for this parameter would give better search precision, but also take more time. If automatic configuration was used when the index was created, the number of checks required to achieve the specified precision was also computed, in which case this parameter is ignored.
+
+      int* indices_ptr = indices.ptr<int> (0);
+      float* dists_ptr = dists.ptr<float> (0);
+
+      cv::DMatch match;
+      double avg_ratio = 0.0;
+      double max_dist_ratio_fac = ps->get<double>("nn_distance_ratio");
+      for (int i = 0; i < indices.rows; ++i) {
+        float dist_ratio_fac =  static_cast<float>(dists_ptr[2 * i]) / static_cast<float>(dists_ptr[2 * i + 1]);
+        avg_ratio += dist_ratio_fac;
+        //if (indices.rows < min_kp) dist_ratio_fac = 1.0; //if necessary use possibly bad descriptors
+        if (max_dist_ratio_fac > dist_ratio_fac) {
+          match.queryIdx = i;
+          match.trainIdx = indices_ptr[2 * i];
+          match.distance = dist_ratio_fac; //dists_ptr[2 * i];
+          sum_distances += match.distance;
+
+          assert(match.trainIdx < other->feature_descriptors_.rows);
+          assert(match.queryIdx < feature_descriptors_.rows);
+          matches->push_back(match);
+        }
+      }
+      ROS_INFO("Feature Matches between Nodes %3d (%4d features) and %3d (%4d features) in segment %d/%d (features %d to %d of first node):\t%4d. Percentage: %f%%, Avg NN Ratio: %f",
+                this->id_, (int)this->feature_locations_2d_.size(), other->id_, (int)other->feature_locations_2d_.size(), seg, num_segments, start_feature, start_feature+num_features, 
+                (int)matches->size(), (100.0*matches->size())/((float)start_feature+num_features), avg_ratio / (start_feature+num_features));
+      if((int)matches->size() > ps->get<int>("sufficient_matches")){
+        ROS_INFO("Enough matches. Skipping remaining segments");
+        break;
+      }
+      if((int)matches->size()*num_segments/(float)seg < 0.5*ps->get<int>("min_matches")){
+        ROS_INFO("Predicted not enough feature matches, aborting matching process");
+        break;
+      }
+      start_feature += num_features;
+    }//for
+  }
+  else {
+      ROS_FATAL_STREAM("Cannot match features:\nNo valid combination for " <<
+                       "matcher_type ("           << ps->get<std::string>("matcher_type") << ") and " <<
+                       "feature_extractor_type (" << ps->get<std::string>("feature_extractor_type") << ") chosen.");
+  }
+
+  ROS_INFO_NAMED("statistics", "count_matrix(%3d, %3d) =  %4d;",
+                 this->id_+1, other->id_+1, (int)matches->size());
+  ROS_INFO_NAMED("statistics", "dista_matrix(%3d, %3d) =  %f;",
+                 this->id_+1, other->id_+1, sum_distances/ (float)matches->size());
+  ROS_DEBUG_NAMED("statistics", "Feature Matches between Nodes %3d (%4d features) and %3d (%4d features):\t%4d",
+                  this->id_, (int)this->feature_locations_2d_.size(),
+                  other->id_, (int)other->feature_locations_2d_.size(),
+                  (int)matches->size());
 
   //ROS_INFO("matches size: %i, rows: %i", (int) matches->size(), feature_descriptors_.rows);
 
-  ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "findPairsFlann runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
+  clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
+  //assert(one_nearest_neighbour+two_nearest_neighbours > 0);
+  //return static_cast<float>(one_nearest_neighbour) / static_cast<float>(one_nearest_neighbour+two_nearest_neighbours);
   return matches->size();
 }
 
@@ -334,10 +535,90 @@ int Node::findPairsFlann(const Node* other, vector<cv::DMatch>* matches) const {
 
 #ifdef USE_SIFT_GPU
 void Node::projectTo3DSiftGPU(std::vector<cv::KeyPoint>& feature_locations_2d,
-    std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> >& feature_locations_3d,
-    const pointcloud_type& point_cloud, float* descriptors_in, cv::Mat& descriptors_out){
+                              std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> >& feature_locations_3d,
+                              const cv::Mat& depth,
+                              const sensor_msgs::CameraInfoConstPtr& cam_info,
+                              std::vector<float>& descriptors_in, cv::Mat& descriptors_out)
+{
 
-  std::clock_t starttime=std::clock();
+  struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
+
+  double depth_scaling = ParameterServer::instance()->get<double>("depth_scaling_factor");
+  float x,y;//temp point, 
+  //principal point and focal lengths:
+  float cx = cam_info->K[2]; //(cloud_msg->width >> 1) - 0.5f;
+  float cy = cam_info->K[5]; //(cloud_msg->height >> 1) - 0.5f;
+  float fx = 1.0f / cam_info->K[0]; 
+  float fy = 1.0f / cam_info->K[4]; 
+  cv::Point2f p2d;
+
+  if(feature_locations_3d.size()){
+    ROS_INFO("There is already 3D Information in the FrameInfo, clearing it");
+    feature_locations_3d.clear();
+  }
+
+  std::list<int> featuresUsed;
+  
+  int index = -1;
+  for(unsigned int i = 0; i < feature_locations_2d.size(); /*increment at end of loop*/){
+    ++index;
+
+    p2d = feature_locations_2d[i].pt;
+    float Z = depth.at<float>(p2d.y, p2d.x) * depth_scaling;
+
+    // Check for invalid measurements
+    if (std::isnan (Z))
+    {
+      ROS_DEBUG_NAMED(__FILE__, "Feature %d has been extracted at NaN depth. Omitting", i);
+      feature_locations_2d.erase(feature_locations_2d.begin()+i);
+      continue;
+    }
+    x = (p2d.x - cx) * Z * fx;
+    y = (p2d.y - cy) * Z * fy;
+
+    feature_locations_3d.push_back(Eigen::Vector4f(x,y, Z, 1.0));
+    featuresUsed.push_back(index);  //save id for constructing the descriptor matrix
+    i++; //Only increment if no element is removed from vector
+  }
+
+  //create descriptor matrix
+  int size = feature_locations_3d.size();
+  descriptors_out = cv::Mat(size, 128, CV_32F);
+  siftgpu_descriptors.resize(size * 128);
+  for (int y = 0; y < size && featuresUsed.size() > 0; ++y) {
+    int id = featuresUsed.front();
+    featuresUsed.pop_front();
+
+    for (int x = 0; x < 128; ++x) {
+      descriptors_out.at<float>(y, x) = descriptors_in[id * 128 + x];
+      siftgpu_descriptors[y * 128 + x] = descriptors_in[id * 128 + x];
+    }
+  }
+  /*
+  //create descriptor matrix
+  int size = feature_locations_3d.size();
+  descriptors_out = cv::Mat(size, 128, CV_32F);
+  for (int y = 0; y < size && featuresUsed.size() > 0; ++y) {
+    int id = featuresUsed.front();
+    featuresUsed.pop_front();
+
+    for (int x = 0; x < 128; ++x) {
+      descriptors_out.at<float>(y, x) = descriptors_in[id * 128 + x];
+    }
+  }
+  */
+
+  clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
+}
+
+void Node::projectTo3DSiftGPU(std::vector<cv::KeyPoint>& feature_locations_2d,
+                              std::vector<Eigen::Vector4f, 
+                              Eigen::aligned_allocator<Eigen::Vector4f> >& feature_locations_3d,
+                              const pointcloud_type::Ptr point_cloud, 
+                              std::vector<float>& descriptors_in, cv::Mat& descriptors_out)
+{
+
+  struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
 
   cv::Point2f p2d;
 
@@ -353,49 +634,44 @@ void Node::projectTo3DSiftGPU(std::vector<cv::KeyPoint>& feature_locations_2d,
     ++index;
 
     p2d = feature_locations_2d[i].pt;
-    if (p2d.x >= point_cloud.width || p2d.x < 0 ||
-        p2d.y >= point_cloud.height || p2d.y < 0 ||
-        std::isnan(p2d.x) || std::isnan(p2d.y)){ //TODO: Unclear why points should be outside the image or be NaN
-      ROS_WARN_STREAM("Ignoring invalid keypoint: " << p2d); //Does it happen at all? If not, remove this code block
+    point_type p3d = point_cloud->at((int) p2d.x,(int) p2d.y);
+
+    // Check for invalid measurements
+    if ( isnan(p3d.x) || isnan(p3d.y) || isnan(p3d.z))
+    {
+      ROS_DEBUG_NAMED(__FILE__, "Feature %d has been extracted at NaN depth. Omitting", i);
       feature_locations_2d.erase(feature_locations_2d.begin()+i);
       continue;
     }
 
-    point_type p3d = point_cloud.at((int) p2d.x,(int) p2d.y);
-
-    if ( isnan(p3d.x) || isnan(p3d.y) || isnan(p3d.z)){
-      feature_locations_2d.erase(feature_locations_2d.begin()+i);
-      continue;
-    }
-
-    featuresUsed.push_back(index);  //save id for constructing the descriptor matrix
     feature_locations_3d.push_back(Eigen::Vector4f(p3d.x, p3d.y, p3d.z, 1.0));
+    featuresUsed.push_back(index);  //save id for constructing the descriptor matrix
     i++; //Only increment if no element is removed from vector
   }
 
   //create descriptor matrix
   int size = feature_locations_3d.size();
   descriptors_out = cv::Mat(size, 128, CV_32F);
+  siftgpu_descriptors.resize(size * 128);
   for (int y = 0; y < size && featuresUsed.size() > 0; ++y) {
     int id = featuresUsed.front();
     featuresUsed.pop_front();
 
     for (int x = 0; x < 128; ++x) {
       descriptors_out.at<float>(y, x) = descriptors_in[id * 128 + x];
+      siftgpu_descriptors[y * 128 + x] = descriptors_in[id * 128 + x];
     }
   }
 
-  ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > min_time_reported, "timings", "function runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
+  clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
 }
+#endif
 
-
-
-#else
 void Node::projectTo3D(std::vector<cv::KeyPoint>& feature_locations_2d,
-    std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> >& feature_locations_3d,
-    const pointcloud_type& point_cloud){
-
-  std::clock_t starttime=std::clock();
+                       std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> >& feature_locations_3d,
+                       pointcloud_type::ConstPtr point_cloud)
+{
+  struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
 
   cv::Point2f p2d;
 
@@ -406,19 +682,20 @@ void Node::projectTo3D(std::vector<cv::KeyPoint>& feature_locations_2d,
 
   for(unsigned int i = 0; i < feature_locations_2d.size(); /*increment at end of loop*/){
     p2d = feature_locations_2d[i].pt;
-    if (p2d.x >= point_cloud.width || p2d.x < 0 ||
-        p2d.y >= point_cloud.height || p2d.y < 0 ||
+    if (p2d.x >= point_cloud->width || p2d.x < 0 ||
+        p2d.y >= point_cloud->height || p2d.y < 0 ||
         std::isnan(p2d.x) || std::isnan(p2d.y)){ //TODO: Unclear why points should be outside the image or be NaN
       ROS_WARN_STREAM("Ignoring invalid keypoint: " << p2d); //Does it happen at all? If not, remove this code block
       feature_locations_2d.erase(feature_locations_2d.begin()+i);
       continue;
     }
 
-    point_type p3d = point_cloud.at((int) p2d.x,(int) p2d.y);
+    point_type p3d = point_cloud->at((int) p2d.x,(int) p2d.y);
 
-    //ROS_INFO("3d: %f, %f, %f, 2d: %f, %f", p3d.x, p3d.y, p3d.z, p2d.x, p2d.y);
-
-    if ( isnan(p3d.x) || isnan(p3d.y) || isnan(p3d.z)){
+    // Check for invalid measurements
+    if ( isnan(p3d.x) || isnan(p3d.y) || isnan(p3d.z))
+    {
+      ROS_DEBUG_NAMED(__FILE__, "Feature %d has been extracted at NaN depth. Omitting", i);
       feature_locations_2d.erase(feature_locations_2d.begin()+i);
       continue;
     }
@@ -427,29 +704,147 @@ void Node::projectTo3D(std::vector<cv::KeyPoint>& feature_locations_2d,
     i++; //Only increment if no element is removed from vector
   }
 
-
-
-  ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "function runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
+  clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
 }
-#endif
+
+void Node::projectTo3D(std::vector<cv::KeyPoint>& feature_locations_2d,
+                       std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> >& feature_locations_3d,
+                       const cv::Mat& depth,
+                       const sensor_msgs::CameraInfoConstPtr& cam_info)
+{
+  struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
+  double depth_scaling = ParameterServer::instance()->get<double>("depth_scaling_factor");
+  float x,y;//temp point, 
+  //principal point and focal lengths:
+  float cx = cam_info->K[2]; //(cloud_msg->width >> 1) - 0.5f;
+  float cy = cam_info->K[5]; //(cloud_msg->height >> 1) - 0.5f;
+  float fx = 1.0f / cam_info->K[0]; 
+  float fy = 1.0f / cam_info->K[4]; 
+
+  cv::Point2f p2d;
+
+  if(feature_locations_3d.size()){
+    ROS_INFO("There is already 3D Information in the FrameInfo, clearing it");
+    feature_locations_3d.clear();
+  }
+
+  for(unsigned int i = 0; i < feature_locations_2d.size(); /*increment at end of loop*/){
+    p2d = feature_locations_2d[i].pt;
+    if (p2d.x >= depth.cols || p2d.x < 0 ||
+        p2d.y >= depth.rows || p2d.y < 0 ||
+        std::isnan(p2d.x) || std::isnan(p2d.y)){ //TODO: Unclear why points should be outside the image or be NaN
+      ROS_WARN_STREAM("Ignoring invalid keypoint: " << p2d); //Does it happen at all? If not, remove this code block
+      feature_locations_2d.erase(feature_locations_2d.begin()+i);
+      continue;
+    }
+
+    float Z = depth.at<float>(p2d.y, p2d.x) * depth_scaling;
+
+    // Check for invalid measurements
+    if (std::isnan (Z))
+    {
+      ROS_DEBUG_NAMED(__FILE__, "Feature %d has been extracted at NaN depth. Omitting", i);
+      feature_locations_2d.erase(feature_locations_2d.begin()+i);
+      continue;
+    }
+    x = (p2d.x - cx) * Z * fx;
+    y = (p2d.y - cy) * Z * fy;
+
+    feature_locations_3d.push_back(Eigen::Vector4f(x,y, Z, 1.0));
+    i++; //Only increment if no element is removed from vector
+  }
+
+  clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
+}
 
 
+double errorFunction(const Eigen::Vector4f& x1, const double x1_depth_cov, 
+                     const Eigen::Vector4f& x2, const double x2_depth_cov, 
+                     const Eigen::Matrix4f& tf_1_to_2)
+{
+  const double cam_angle_x = 58.0/180.0*M_PI;
+  const double cam_angle_y = 45.0/180.0*M_PI;
+  const double cam_resol_x = 640;
+  const double cam_resol_y = 480;
+  const double raster_stddev_x = 2*tan(cam_angle_x/cam_resol_x);  //2pix stddev in x
+  const double raster_stddev_y = 2*tan(cam_angle_y/cam_resol_y);  //2pix stddev in y
+  const double raster_cov_x = raster_stddev_x * raster_stddev_x;
+  const double raster_cov_y = raster_stddev_y * raster_stddev_y;
+
+  ROS_WARN_COND(x1(3) != 1.0, "4th element of x1 should be 1.0, is %f", x1(3));
+  ROS_WARN_COND(x2(3) != 1.0, "4th element of x2 should be 1.0, is %f", x2(3));
+  Eigen::Vector3d mu_1 = x1.head<3>().cast<double>();
+  Eigen::Vector3d mu_2 = x2.head<3>().cast<double>();
+  Eigen::Matrix3d rotation_mat = Eigen::Matrix3d::Identity();
+  rotation_mat(0,0) = static_cast<double>(tf_1_to_2(0,0));
+  rotation_mat(0,1) = static_cast<double>(tf_1_to_2(0,1));
+  rotation_mat(0,2) = static_cast<double>(tf_1_to_2(0,2));
+  rotation_mat(1,0) = static_cast<double>(tf_1_to_2(1,0));
+  rotation_mat(1,1) = static_cast<double>(tf_1_to_2(1,1));
+  rotation_mat(1,2) = static_cast<double>(tf_1_to_2(1,2));
+  rotation_mat(2,0) = static_cast<double>(tf_1_to_2(2,0));
+  rotation_mat(2,1) = static_cast<double>(tf_1_to_2(2,1));
+  rotation_mat(2,2) = static_cast<double>(tf_1_to_2(2,2));
+
+  //Point 1
+  Eigen::Matrix3d cov1 = Eigen::Matrix3d::Identity();
+  cov1(0,0) = raster_cov_x* mu_1(2); //how big is 1px std dev in meter, depends on depth
+  cov1(1,1) = raster_cov_y* mu_1(2); //how big is 1px std dev in meter, depends on depth
+  cov1(2,2) = x1_depth_cov;
+  //Point2
+  Eigen::Matrix3d cov2 = Eigen::Matrix3d::Identity();
+  cov2(0,0) = raster_cov_x* mu_2(2); //how big is 1px std dev in meter, depends on depth
+  cov2(1,1) = raster_cov_y* mu_2(2); //how big is 1px std dev in meter, depends on depth
+  cov2(2,2) = x2_depth_cov;
+
+  Eigen::Matrix3d cov2inv = cov2.inverse();
+
+  Eigen::Vector3d mu_1_in_frame_2 = (tf_1_to_2 * x1).head<3>().cast<double>();
+  Eigen::Matrix3d cov1_in_frame_2 = rotation_mat.transpose() * cov1 * rotation_mat;//Works since the cov is diagonal => Eig-Vec-Matrix is Identity
+  Eigen::Matrix3d cov1inv_in_frame_2 = cov1_in_frame_2.inverse();
+
+  Eigen::Vector3d x_ml;//Max Likelhood Position of latent point, that caused the sensor msrmnt
+  x_ml = cov1inv_in_frame_2 * mu_1_in_frame_2 + cov2inv * mu_2; 
+  Eigen::Matrix3d cov_sum = (cov1inv_in_frame_2 + cov2inv);
+  Eigen::Matrix3d inv_cov_sum = cov_sum.inverse();
+  ROS_ERROR_STREAM_COND(inv_cov_sum!=inv_cov_sum,"Sum of Covariances not invertible: \n" << cov_sum);
+  x_ml = inv_cov_sum * x_ml;
+  Eigen::Vector3d delta_mu_1 = mu_1_in_frame_2 - x_ml;
+  Eigen::Vector3d delta_mu_2 = mu_2 - x_ml;
+  
+  float mahalanobis_distance1 = delta_mu_1.transpose() * cov1inv_in_frame_2 * delta_mu_1;// Δx_2^T Σ Δx_2 
+  float mahalanobis_distance2 = delta_mu_2.transpose() * cov2inv * delta_mu_2; // Δx_1^T Σ Δx_1
+  float mahalanobis_distance = mahalanobis_distance1 + mahalanobis_distance2;
+  if(!(mahalanobis_distance >= 0.0)){
+    ROS_WARN_STREAM("mu_1, mu_2, (all in frame 2):\n" << mu_1_in_frame_2 << "\n" << mu_2 << "\ndelta_mu_1, delta_mu_2,\n" << delta_mu_1 << "\n" << delta_mu_2 << "\nx_ml \n" << x_ml);
+    ROS_WARN_STREAM("Covariance of mu_1: \n"<<cov1);
+    ROS_WARN_STREAM("Covariance of mu_2: \n"<<cov2);
+    ROS_WARN_STREAM("Covariance of mu_1 in frame 2: \n"<<cov1_in_frame_2);
+    ROS_WARN_STREAM("Inverse Covariance of mu_1: \n"<<cov1.inverse());
+    ROS_WARN_STREAM("Inverse Covariance of mu_2: \n"<<cov2inv);
+    ROS_WARN_STREAM("Inverse Covariance of mu_1 in frame 2: \n"<<cov1inv_in_frame_2);
+    return std::numeric_limits<double>::max();
+  }
+  return mahalanobis_distance;
+}
 
 void Node::computeInliersAndError(const std::vector<cv::DMatch>& matches,
                                   const Eigen::Matrix4f& transformation,
                                   const std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> >& origins,
+                                  const std::vector<std::pair<float, float> > origins_depth_stats,
                                   const std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> >& earlier,
+                                  const std::vector<std::pair<float, float> > targets_depth_stats,
                                   std::vector<cv::DMatch>& inliers, //output var
                                   double& mean_error,
-                                  vector<double>& errors,
+                                  std::vector<double>& errors,
                                   double squaredMaxInlierDistInM) const{ //output var
 
-  std::clock_t starttime=std::clock();
+  struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
 
   inliers.clear();
   errors.clear();
 
-  vector<pair<float,int> > dists;
+  std::vector<std::pair<float,int> > dists;
   std::vector<cv::DMatch> inliers_temp;
 
   assert(matches.size() > 0);
@@ -459,22 +854,37 @@ void Node::computeInliersAndError(const std::vector<cv::DMatch>& matches,
     unsigned int this_id = matches[j].queryIdx;
     unsigned int earlier_id = matches[j].trainIdx;
 
-    Eigen::Vector4f vec = (transformation * origins[this_id]) - earlier[earlier_id];
+    const Eigen::Vector4f& origin = origins[this_id];
+    const Eigen::Vector4f& target = earlier[earlier_id];
+    Eigen::Vector4f origin_tfd = (transformation * origins[this_id]);
+    Eigen::Vector4f vec =  origin_tfd - earlier[earlier_id];
 
     double error = vec.dot(vec);
-
-    if(error > squaredMaxInlierDistInM)
+    double depth_cov1 = origin(2)*origin(2) * 0.0075; //stddev computed from information on http://www.ros.org/wiki/openni_kinect/kinect_accuracy
+    //if(origins_depth_stats.size() > 0) //currently not in use
+      //depth_cov1 += origins_depth_stats[this_id].second - origins_depth_stats[this_id].first; //maximum depth difference
+    depth_cov1 *= depth_cov1;
+    double depth_cov2 = target(2)*target(2) * 0.0075; //stddev computed from information on http://www.ros.org/wiki/openni_kinect/kinect_accuracy
+    //if(targets_depth_stats.size() > 0) //currently not in use
+      //depth_cov2 += targets_depth_stats[this_id].second - targets_depth_stats[this_id].first; //maximum depth difference
+    depth_cov2 *= depth_cov2;
+    double mahalanobis_ml_error = errorFunction(origin, depth_cov1, target, depth_cov2, transformation);
+    //ROS_DEBUG_STREAM_NAMED(__FILE__, "Mahalanobis Distanz betw. " << origin_tfd << " and " << earlier[earlier_id] << ": " << mahalanobis_ml_error);
+    if(mahalanobis_ml_error > squaredMaxInlierDistInM)
       continue; //ignore outliers
-    if(!(error >= 0.0)){
-      ROS_ERROR_STREAM("Transformation for error !> 0: " << transformation);
-      ROS_ERROR_STREAM(error << " " << matches.size());
+    if(!(mahalanobis_ml_error >= 0.0)){
+      ROS_WARN_STREAM("Euclidean Squared Error: "<< error << ", Mahalanobis_ML_Error: "<<mahalanobis_ml_error);
+      ROS_WARN_STREAM("Transformation for error !> 0:\n" << transformation);
+      error /= origins[this_id][2] * earlier[earlier_id][2];
+      ROS_WARN_STREAM("Weighted Euclidean Squared Error: "<< error << ", Mahalanobis_ML_Error: "<<mahalanobis_ml_error);
+      ROS_WARN_STREAM(error << " " << matches.size());
     }
-    error = sqrt(error);
-    dists.push_back(pair<float,int>(error,j));
+    error = sqrt(mahalanobis_ml_error);
+    dists.push_back(std::pair<float,int>(error,j));
     inliers_temp.push_back(matches[j]); //include inlier
 
     mean_error += error;
-    errors.push_back(error);
+    errors.push_back(mahalanobis_ml_error);
   }
 
   if (inliers_temp.size()<3){ //at least the samples should be inliers
@@ -491,9 +901,9 @@ void Node::computeInliersAndError(const std::vector<cv::DMatch>& matches,
       inliers[i] = matches[dists[i].second];
     }
   }
-  if(!(mean_error>0)) ROS_ERROR_STREAM("Transformation for mean error !> 0: " << transformation);
-  if(!(mean_error>0)) ROS_ERROR_STREAM(mean_error << " " << inliers_temp.size());
-  ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "function runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
+  if(!(mean_error>0)) ROS_DEBUG_STREAM("Transformation for mean error !> 0: " << transformation);
+  if(!(mean_error>0)) ROS_DEBUG_STREAM(mean_error << " " << inliers_temp.size());
+  clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
 
 }
 
@@ -506,7 +916,7 @@ Eigen::Matrix4f Node::getTransformFromMatches(const Node* earlier_node,
 {
   pcl::TransformationFromCorrespondences tfc;
   valid = true;
-  vector<Eigen::Vector3f> t, f;
+  std::vector<Eigen::Vector3f> t, f;
 
   for ( ;iter_begin!=iter_end; iter_begin++) {
     int this_id    = iter_begin->queryIdx;
@@ -522,7 +932,7 @@ Eigen::Matrix4f Node::getTransformFromMatches(const Node* earlier_node,
       f.push_back(from);
       t.push_back(to);    
     }
-    tfc.add(from, to, 1.0/to(0));//the further, the less weight b/c of accuracy decay
+    tfc.add(from, to, 1.0/(to(2)*to(2)));//the further, the less weight b/c of quadratic accuracy decay
   }
 
 
@@ -560,10 +970,9 @@ bool Node::getRelativeTransformationTo(const Node* earlier_node,
                                        std::vector<cv::DMatch>* initial_matches,
                                        Eigen::Matrix4f& resulting_transformation,
                                        float& rmse, 
-                                       std::vector<cv::DMatch>& matches,
-                                       unsigned int ransac_iterations) const
+                                       std::vector<cv::DMatch>& matches) const
 {
-  std::clock_t starttime=std::clock();
+  struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
 
   assert(initial_matches != NULL);
   matches.clear();
@@ -573,23 +982,32 @@ bool Node::getRelativeTransformationTo(const Node* earlier_node,
     return false;
   }
 
-  unsigned int min_inlier_threshold = int(initial_matches->size()*0.2);
+  //unsigned int min_inlier_threshold = int(initial_matches->size()*0.2);
+  unsigned int min_inlier_threshold = (unsigned int) ParameterServer::instance()->get<int>("min_matches");
+  if(min_inlier_threshold > 0.75 * initial_matches->size()){
+    ROS_WARN("Lowering min_inlier_threshold from %d to %d, because there are only %d matches to begin with", min_inlier_threshold, (int) (0.75 * initial_matches->size()), (int)initial_matches->size());
+    min_inlier_threshold = 0.75 * initial_matches->size();
+  }
+
   std::vector<cv::DMatch> inlier; //holds those feature correspondences that support the transformation
   double inlier_error; //all squared errors
   srand((long)std::clock());
   
   // a point is an inlier if it's no more than max_dist_m m from its partner apart
   const float max_dist_m = ParameterServer::instance()->get<double>("max_dist_for_inliers");
-  vector<double> dummy;
+  const int ransac_iterations = ParameterServer::instance()->get<int>("ransac_iterations");
+  std::vector<double> dummy;
 
-  // best values of all iterations (including invalids)
-  double best_error = 1e6, best_error_invalid = 1e6;
-  unsigned int best_inlier_invalid = 0, best_inlier_cnt = 0, valid_iterations = 0;
+  // best values of all iterations 
+  double best_error = 1e6,  best_error_coarse = 1e6;
+  unsigned int best_inlier = 0,  valid_iterations = 0;//, best_inlier_cnt = 0;
+  unsigned int best_inlier_coarse = 0;
 
   Eigen::Matrix4f transformation;
   
+  //INITIALIZATION STEP WITH RANDOM SAMPLES ###############################################
   const unsigned int sample_size = 3;// chose this many randomly from the correspondences:
-  for (uint n_iter = 0; n_iter < ransac_iterations; n_iter++) {
+  for (int n_iter = 0; n_iter < ransac_iterations; n_iter++) {
     //generate a map of samples. Using a map solves the problem of drawing a sample more than once
     std::set<cv::DMatch> sample_matches;
     std::vector<cv::DMatch> sample_matches_vector;
@@ -605,101 +1023,94 @@ bool Node::getRelativeTransformationTo(const Node* earlier_node,
     if(transformation!=transformation) continue; //Contains NaN
     
     //test whether samples are inliers (more strict than before)
-    computeInliersAndError(sample_matches_vector, transformation, this->feature_locations_3d_, 
-                           earlier_node->feature_locations_3d_, inlier, inlier_error,  /*output*/
+    computeInliersAndError(sample_matches_vector, transformation, 
+                           this->feature_locations_3d_, 
+                           this->feature_depth_stats_, 
+                           earlier_node->feature_locations_3d_, 
+                           earlier_node->feature_depth_stats_, 
+                           inlier, inlier_error,  /*output*/
                            dummy, max_dist_m*max_dist_m); 
+    ROS_DEBUG_NAMED(__FILE__, "Transformation from and for %u samples results in an error of %f and %i inliers.", sample_size, inlier_error, (int)inlier.size());
     if(inlier_error > 1000) continue; //most possibly a false match in the samples
-    computeInliersAndError(*initial_matches, transformation, this->feature_locations_3d_, 
-                           earlier_node->feature_locations_3d_, inlier, inlier_error,  /*output*/
-                           dummy, max_dist_m*max_dist_m);
 
-    // check also invalid iterations
-    if (inlier.size() > best_inlier_invalid) {
-      best_inlier_invalid = inlier.size();
-      best_error_invalid = inlier_error;
-    }
-    // ROS_INFO("iteration %d  cnt: %d, best: %d,  error: %.2f",n_iter, inlier.size(), best_inlier_cnt, inlier_error*100);
+    //COARSE ESTIMATE TO THROW OUT SURE OUTLIERS
+    computeInliersAndError(*initial_matches, transformation, 
+                           this->feature_locations_3d_, 
+                           this->feature_depth_stats_, 
+                           earlier_node->feature_locations_3d_, 
+                           earlier_node->feature_depth_stats_, 
+                           inlier, inlier_error,  /*output*/
+                           dummy, max_dist_m*max_dist_m*4); //use twice the distance (4x squared dist) to get more inliers for refinement
+    ROS_DEBUG_NAMED(__FILE__, "Transformation from %u samples results in an error of %f and %i inliers for all matches (%i).", sample_size, inlier_error, (int)inlier.size(), (int)initial_matches->size());
 
     if(inlier.size() < min_inlier_threshold || inlier_error > max_dist_m){
-      //inlier.size() < ((float)initial_matches->size())*min_inlier_ratio || 
-      // ROS_INFO("Skipped iteration: inliers: %i (min %i), inlier_error: %.2f (max %.2f)", (int)inlier.size(), (int) min_inlier_threshold,  inlier_error*100, max_dist_m*100);
-      continue;
+      ROS_DEBUG_NAMED(__FILE__, "Skipped iteration: inliers: %i (min %i), inlier_error: %.2f (max %.2f)", (int)inlier.size(), (int) min_inlier_threshold,  inlier_error*100, max_dist_m*100);
+      continue; //hopeless case
     }
-    // ROS_INFO("Refining iteration from %i samples: all matches: %i, inliers: %i, inlier_error: %f", (int)sample_size, (int)initial_matches->size(), (int)inlier.size(), inlier_error);
+    //Inferior to coarse estimates?
+    if (inlier.size() < best_inlier_coarse && inlier_error > best_error_coarse) {
+      continue; //hopeless case
+    }
+    best_inlier_coarse = inlier.size();
+    best_error_coarse = inlier_error;
+    //Totally superior?
+    if (inlier.size() > best_inlier && inlier_error < best_inlier) {
+      best_inlier = inlier.size();
+      best_error = inlier_error;
+    }
+
+    ROS_DEBUG_NAMED(__FILE__, "Refining iteration from %i samples: all matches: %i, inliers: %i, inlier_error: %f", (int)sample_size, (int)initial_matches->size(), (int)inlier.size(), inlier_error);
     valid_iterations++;
-    //if (inlier_error > 0) ROS_ERROR("size: %i", (int)dummy.size());
-    assert(inlier_error>0);
+    assert(inlier_error>=0);
 
     //Performance hacks:
-    ///Iterations with more than half of the initial_matches inlying, count twice
-    if (inlier.size() > initial_matches->size()*0.5) n_iter++;
-    ///Iterations with more than 80% of the initial_matches inlying, count threefold
-    if (inlier.size() > initial_matches->size()*0.8) n_iter++;
-
-
+    if (inlier.size() > initial_matches->size()*0.5) n_iter+=10;///Iterations with more than half of the initial_matches inlying, count twice
+    if (inlier.size() > initial_matches->size()*0.8) n_iter+=20; ///Iterations with more than 80% of the initial_matches inlying, count threefold
 
     if (inlier_error < best_error) { //copy this to the result
       resulting_transformation = transformation;
       matches = inlier;
       assert(matches.size()>= min_inlier_threshold);
-      best_inlier_cnt = inlier.size();
-      //assert(matches.size()>= ((float)initial_matches->size())*min_inlier_ratio);
+      //best_inlier_cnt = inlier.size();
       rmse = inlier_error;
       best_error = inlier_error;
-      // ROS_INFO("  new best iteration %d  cnt: %d, best_inlier: %d,  error: %.4f, bestError: %.4f",n_iter, inlier.size(), best_inlier_cnt, inlier_error, best_error);
-
-    }else
-    {
-      // ROS_INFO("NO new best iteration %d  cnt: %d, best_inlier: %d,  error: %.4f, bestError: %.4f",n_iter, inlier.size(), best_inlier_cnt, inlier_error, best_error);
     }
 
-    //int max_ndx = min((int) min_inlier_threshold,30); //? What is this 30?
-    double new_inlier_error;
 
+    //REFINEMENT STEP FROM INLIERS ###############################################
+    double new_inlier_error;
     transformation = getTransformFromMatches(earlier_node, matches.begin(), matches.end(), valid); // compute new trafo from all inliers:
     if(transformation!=transformation) continue; //Contains NaN
     computeInliersAndError(*initial_matches, transformation,
-                           this->feature_locations_3d_, earlier_node->feature_locations_3d_,
+                           this->feature_locations_3d_, 
+                           this->feature_depth_stats_, 
+                           earlier_node->feature_locations_3d_,
+                           earlier_node->feature_depth_stats_, 
                            inlier, new_inlier_error, dummy, max_dist_m*max_dist_m);
-
-    // ROS_INFO("asd recomputed: inliersize: %i, inlier error: %f", (int) inlier.size(),100*new_inlier_error);
-
-
-    // check also invalid iterations
-    if (inlier.size() > best_inlier_invalid)
-    {
-      best_inlier_invalid = inlier.size();
-      best_error_invalid = inlier_error;
-    }
+    ROS_DEBUG_NAMED(__FILE__, "Refined Transformation from all matches (%i) results in an error of %f and %i inliers for all matches.", (int)initial_matches->size(), inlier_error, (int)inlier.size());
 
     if(inlier.size() < min_inlier_threshold || new_inlier_error > max_dist_m){
-      //inlier.size() < ((float)initial_matches->size())*min_inlier_ratio || 
-      // ROS_INFO("Skipped iteration: inliers: %i (min %i), inlier_error: %.2f (max %.2f)", (int)inlier.size(), (int) min_inlier_threshold,  inlier_error*100, max_dist_m*100);
       continue;
     }
-    // ROS_INFO("Refined iteration from %i samples: all matches %i, inliers: %i, new_inlier_error: %f", (int)sample_size, (int)initial_matches->size(), (int)inlier.size(), new_inlier_error);
-
-    assert(new_inlier_error>0);
-
-    if (new_inlier_error < best_error) 
-    {
+    //Totally superior?
+    if (inlier.size() > best_inlier && new_inlier_error < best_inlier) {
+      best_inlier = inlier.size();
+      best_error = inlier_error;
       resulting_transformation = transformation;
       matches = inlier;
       assert(matches.size()>= min_inlier_threshold);
       //assert(matches.size()>= ((float)initial_matches->size())*min_inlier_ratio);
       rmse = new_inlier_error;
       best_error = new_inlier_error;
-      // ROS_INFO("  improved: new best iteration %d  cnt: %d, best_inlier: %d,  error: %.2f, bestError: %.2f",n_iter, inlier.size(), best_inlier_cnt, inlier_error*100, best_error*100);
-    }else
-    {
-      // ROS_INFO("improved: NO new best iteration %d  cnt: %d, best_inlier: %d,  error: %.2f, bestError: %.2f",n_iter, inlier.size(), best_inlier_cnt, inlier_error*100, best_error*100);
     }
   } //iterations
-  ROS_INFO("%i good iterations (from %i), inlier pct %i, inlier cnt: %i, error: %.2f cm",valid_iterations, (int) ransac_iterations, (int) (matches.size()*1.0/initial_matches->size()*100),(int) matches.size(),rmse*100);
+
+  ROS_INFO("%i good iterations (from %i), inlier pct %i, inlier cnt: %i, error: %.2f cm",valid_iterations, ransac_iterations, (int) (matches.size()*1.0/initial_matches->size()*100),(int) matches.size(),rmse*100);
   // ROS_INFO("best overall: inlier: %i, error: %.2f",best_inlier_invalid, best_error_invalid*100);
 
-  ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << "runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
-  return matches.size() >= min_inlier_threshold;
+  clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
+  bool enough_absolute = matches.size() >= min_inlier_threshold;
+  return enough_absolute;
 }
 
 
@@ -727,116 +1138,176 @@ void Node::gicpSetIdentity(dgc_transform_t m){
 #endif
 
 
-//TODO: Merge this with processNodePair
-MatchingResult Node::matchNodePair(const Node* older_node){
-  MatchingResult mr;
-  const unsigned int min_matches = 16; // minimal number of feature correspondences to be a valid candidate for a link
-  // std::clock_t starttime=std::clock();
 
+MatchingResult Node::matchNodePair(const Node* older_node)
+{
+  MatchingResult mr;
+  bool found_transformation = false;
+  if(initial_node_matches_ > ParameterServer::instance()->get<int>("max_connections")) return mr; //enough is enough
+  const unsigned int min_matches = (unsigned int) ParameterServer::instance()->get<int>("min_matches");// minimal number of feature correspondences to be a valid candidate for a link
+  // struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
 
   this->findPairsFlann(older_node, &mr.all_matches); 
-  ROS_DEBUG("found %i inital matches",(int) mr.all_matches.size());
-  if (mr.all_matches.size() < min_matches){
-    ROS_INFO("Too few inliers: Adding no Edge between %i and %i. Only %i correspondences to begin with.",
-        older_node->id_,this->id_,(int)mr.all_matches.size());
-  } 
-  else if (!getRelativeTransformationTo(older_node,&mr.all_matches, mr.ransac_trafo, mr.rmse, mr.inlier_matches) ){ // mr.all_matches.size()/3
-      ROS_INFO("Found no valid trafo, but had initially %d feature matches",(int) mr.all_matches.size());
-  } else  {
 
-      mr.final_trafo = mr.ransac_trafo;
-      
+  ROS_DEBUG_NAMED(__FILE__, "found %i inital matches",(int) mr.all_matches.size());
+  if (mr.all_matches.size() < min_matches){
+      ROS_INFO("Too few inliers between %i and %i for RANSAC method. Only %i correspondences to begin with.",
+               older_node->id_,this->id_,(int)mr.all_matches.size());
+  } 
+  else {//All good for feature based transformation estimation
+      found_transformation = getRelativeTransformationTo(older_node,&mr.all_matches, mr.ransac_trafo, mr.rmse, mr.inlier_matches); 
+      //Statistics
+      float nn_ratio = 0.0;
+      if(found_transformation){
+        double w = (double)mr.inlier_matches.size();///(double)mr.all_matches.size();
+        for(unsigned int i = 0; i < mr.inlier_matches.size(); i++){
+          nn_ratio += mr.inlier_matches[i].distance;
+        }
+        nn_ratio /= mr.inlier_matches.size();
+        mr.final_trafo = mr.ransac_trafo;
+        mr.edge.informationMatrix =   Eigen::Matrix<double,6,6>::Identity()*(w*w); //TODO: What do we do about the information matrix? Scale with inlier_count. Should rmse be integrated?)
+        ROS_INFO("RANSAC found a valid transformation with %d inliers matches with average ratio %f",(int) mr.inlier_matches.size(), nn_ratio);
+      } else {
+        for(unsigned int i = 0; i < mr.all_matches.size(); i++){
+          nn_ratio += mr.all_matches[i].distance;
+        }
+        nn_ratio /= mr.all_matches.size();
+        ROS_WARN("RANSAC found no valid trafo, but had initially %d feature matches with average ratio %f",(int) mr.all_matches.size(), nn_ratio);
+      }
+  } 
+  
 #ifdef USE_ICP_CODE
-      getRelativeTransformationTo_ICP_code(older_node,mr.icp_trafo, &mr.ransac_trafo);
+  if(ParameterServer::instance()->get<bool>("use_icp")){
+      if((int)this->id_ - (int)older_node->id_ >= 5){ //This is an "old node" that won't be compared via gicp anymore
+        //clearGICPStructure();//save some memory, not too important though
+      }
+      else if(!found_transformation && initial_node_matches_ == 0) //no matches were found, and frames are not too far apart => identity is a good initial guess.
+      {
+          ROS_INFO("Falling back to GICP for Transformation between Nodes %d and %d",this->id_ , older_node->id_);
+          if(getRelativeTransformationTo_ICP_code(older_node,mr.icp_trafo, mr.ransac_trafo) && //converged
+             !((mr.icp_trafo.array() != mr.icp_trafo.array()).any())) //No NaNs
+          {
+              ROS_INFO("GICP Successful");
+              found_transformation = true;
+              mr.final_trafo = mr.icp_trafo;    
+              mr.edge.informationMatrix = Eigen::Matrix<double,6,6>::Identity()*(1000); //TODO: What do we do about the information matrix? 
+              //translation not as accurate as rotation
+              mr.edge.informationMatrix(0,0) = 200;
+              mr.edge.informationMatrix(1,1) = 200;
+              mr.edge.informationMatrix(2,2) = 200;
+          }
+      }
+  }
 #endif  
-      
+      //TODO: This code is outdated. Adapt it to match USE_ICP_CODE section
 #ifdef USE_ICP_BIN
+  if(!found_transformation && (this->id_ - older_node->id_ < 5) && 
+     initial_node_matches_ == 0 && ParameterServer::instance()->get<bool>("use_icp"))
+  {//GICP Stuff only if no matches were found, but frames are not too far apart (s.t. the identity is a good initial guess.
+      ROS_INFO("Falling back to GICP binary");
       // improve transformation by using the generalized ICP
       // std::clock_t starttime_gicp1 = std::clock();
       bool converged = getRelativeTransformationTo_ICP_bin(older_node,mr.icp_trafo, &mr.ransac_trafo);
       //ROS_INFO_STREAM("Paper: ICP1: " << ((std::clock()-starttime_gicp1*1.0) / (double)CLOCKS_PER_SEC));
 
+      ROS_INFO("icp: inliers: %i", (int)mr.inlier_matches.size());
+      if(converged){ 
+        found_transformation = true; 
+        mr.final_trafo = mr.ransac_trafo * mr.icp_trafo;
 
-      ROS_INFO("icp: inliers: %i", mr.inlier_matches.size());
-      
-      if (!converged) { 
-        ROS_INFO("ICP did not converge. No Edge added");
-        return mr;
+        std::vector<double> errors;
+        double error;
+        std::vector<cv::DMatch> inliers;
+        // check if icp improves alignment:
+        computeInliersAndError(mr.inlier_matches, mr.final_trafo,
+                               this->feature_locations_3d_, 
+                               this->feature_depth_stats_, 
+                               older_node->feature_locations_3d_,
+                               older_node->feature_depth_stats_, 
+                               inliers, error, errors, 0.04*0.04); 
+
+        for (uint i=0; i<errors.size(); i++)
+        {
+          ROS_INFO_COND("error: " << round(errors[i]*10000)/100 );
+        }
+
+        ROS_INFO_COND("error was: " << mr.rmse << " and is now: " << error );
+
+        double roll, pitch, yaw, dist;
+        mat2components(mr.ransac_trafo, roll, pitch, yaw, dist);
+        ROS_INFO_COND("ransac: " << roll << " "<< pitch << " "<< yaw << "   "<< dist );
+
+        mat2components(mr.icp_trafo, roll, pitch, yaw, dist);
+        ROS_INFO_COND("icp: " << roll << " "<< pitch << " "<< yaw << "   "<< dist );
+
+        mat2components(mr.final_trafo, roll, pitch, yaw, dist);
+        ROS_INFO_COND("final: " << roll << " "<< pitch << " "<< yaw << "   "<< dist );
+        ROS_INFO_COND("ransac: " << std::endl << mr.ransac_trafo );
+        ROS_INFO_COND("icp: " << std::endl << mr.icp_trafo );
+        ROS_INFO_COND("total: " << std::endl << mr.final_trafo );
+
+
+        if (error > (mr.rmse+0.02))
+        {
+          ROS_WARN("#### icp-error is too large, ignoring the connection");
+        }
+        else
+          mr.final_trafo = mr.ransac_trafo * mr.icp_trafo;    
       }
-
-      mr.final_trafo = mr.ransac_trafo * mr.icp_trafo;
-
-      MatchingResult mr_icp;
-      vector<double> errors;
-      double error;
-      std::vector<cv::DMatch> inliers;
-      // check if icp improves alignment:
-      computeInliersAndError(mr.inlier_matches, mr.final_trafo,
-          this->feature_locations_3d_, older_node->feature_locations_3d_,
-          inliers, error, errors, 0.04*0.04); 
-
-      for (uint i=0; i<errors.size(); i++)
-      {
-        cout << "error: " << round(errors[i]*10000)/100 << endl;
-      }
-
-      cout << "error was: " << mr.rmse << " and is now: " << error << endl;
-
-      double roll, pitch, yaw, dist;
-      mat2components(mr.ransac_trafo, roll, pitch, yaw, dist);
-      cout << "ransac: " << roll << " "<< pitch << " "<< yaw << "   "<< dist << endl;
-
-
-      mat2components(mr.icp_trafo, roll, pitch, yaw, dist);
-      cout << "icp: " << roll << " "<< pitch << " "<< yaw << "   "<< dist << endl;
-
-      mat2components(mr.final_trafo, roll, pitch, yaw, dist);
-      cout << "final: " << roll << " "<< pitch << " "<< yaw << "   "<< dist << endl;
-
-
-      cout << "ransac: " << endl << mr.ransac_trafo << endl;
-      cout << "icp: " << endl << mr.icp_trafo << endl;
-      cout << "total: " << endl << mr.final_trafo << endl;
-
-
-      if (error > (mr.rmse+0.02))
-      {
-        cout << "#### icp-error is too large, ignoring the connection" << endl;
-        return mr;
-      }
-#endif
-       
-
-#ifndef USE_ICP_BIN
-#ifndef USE_ICP_CODE      
-      mr.final_trafo = mr.ransac_trafo;    
-#endif
+      ROS_INFO_COND(!converged, "ICP did not converge.");
+      w = (double)mr.inlier_matches.size();///(double)mr.all_matches.size();
+      mr.edge.informationMatrix =   Eigen::Matrix<double,6,6>::Identity()*(w*w); //TODO: What do we do about the information matrix? Scale with inlier_count. Should rmse be integrated?)
+  }
 #endif
 
+  if(found_transformation) {
+      ROS_INFO("Returning Valid Edge");
+      ++initial_node_matches_; //trafo is accepted
+      //This signals a valid result:
       mr.edge.id1 = older_node->id_;//and we have a valid transformation
       mr.edge.id2 = this->id_; //since there are enough matching features,
-      mr.edge.mean = eigen2Hogman(mr.final_trafo);//we insert an edge between the frames
-      mr.edge.informationMatrix =   Matrix6::eye(mr.inlier_matches.size()*mr.inlier_matches.size()); //TODO: What do we do about the information matrix? Scale with inlier_count. Should rmse be integrated?)
+      mr.edge.mean = eigen2G2O(mr.final_trafo.cast<double>());//we insert an edge between the frames
   }
-  // Paper
   return mr;
 }
 
-///Get euler angles from affine matrix (helper for isBigTrafo)
-void Node::mat2RPY(const Eigen::Matrix4f& t, double& roll, double& pitch, double& yaw) {
-  roll = atan2(t(2,1),t(2,2));
-  pitch = atan2(-t(2,0),sqrt(t(2,1)*t(2,1)+t(2,2)*t(2,2)));
-  yaw = atan2(t(1,0),t(0,0));
+void Node::clearFeatureInformation(){
+  //clear only points, by swapping data with empty vector (so mem really gets freed)
+	std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> > f_l_3d;  
+  f_l_3d.swap(feature_locations_3d_);
+	std::vector<cv::KeyPoint> f_l_2d; 
+  f_l_2d.swap(feature_locations_2d_);
+  feature_descriptors_.release();
+}
+void Node::addPointCloud(pointcloud_type::Ptr new_pc){
+  pc_col = new_pc;
+}
+void Node::clearPointCloud(){
+  //clear only points, by swapping data with empty vector (so mem really gets freed)
+  pc_col->width = 0;
+  pc_col->height = 0;
+  pointcloud_type pc_empty;
+  pc_empty.points.swap(pc_col->points);
 }
 
-void Node::mat2components(const Eigen::Matrix4f& t, double& roll, double& pitch, double& yaw, double& dist){
-
-  mat2RPY(t, roll,pitch,yaw);
-  mat2dist(t, dist);
-
-  roll = roll/M_PI*180;
-  pitch = pitch/M_PI*180;
-  yaw = yaw/M_PI*180;
-
+/*TODO use this to discount features at depth jumps (or duplicate them -> sensed position + minimum position
+void Node::computeKeypointDepthStats(const cv::Mat& depth_img, const std::vector<cv::KeyPoint> keypoints)
+{
+    ROS_INFO("Computing Keypoint Depth Statistics");
+    struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
+    BOOST_FOREACH(cv::KeyPoint kp, keypoints)
+    { 
+      int radius = kp.size/2;
+      int left = kp.pt.x-radius;
+      int top  = kp.pt.y-radius;
+      double nearest=0.0, farthest=0.0;
+      cv::Mat keypoint_neighbourhood(depth_img, cv::Rect(left, top, (int)kp.size, (int)kp.size));
+      ROS_DEBUG("Nearest: %f, Farthest: %f", nearest, farthest);
+      if(isnan(nearest)) nearest = 1.0;
+      if(isnan(farthest)) farthest = 10.0;
+      cv::minMaxLoc(keypoint_neighbourhood, &nearest, &farthest);
+      feature_depth_stats_.push_back(std::make_pair(nearest, farthest)); 
+    }
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
 }
-
+*/
