@@ -10,6 +10,10 @@
 		
 		<!-- maximum range to integrate (speedup, accuracy) -->
 		<param name="max_sensor_range" value="7.0" />
+
+
+    <param name="filter_ground" value="false" /><!-- who knows where the floor is? -->
+    <param name="base_frame_id" value="/openni_rgb_optical_frame" /> <!--needs to be set, even if not used-->
 		
 		<!-- data source to integrate (PointCloud2) -->
         <remap from="cloud_in" to="/rgbdslam/batch_clouds" />
