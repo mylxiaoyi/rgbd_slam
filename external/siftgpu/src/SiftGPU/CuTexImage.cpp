@@ -29,7 +29,6 @@
 #include <math.h>
 using namespace std;
 
-
 #include <cuda.h>
 #include <cuda_runtime_api.h>
 #include <cuda_gl_interop.h>

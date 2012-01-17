@@ -18,21 +18,26 @@
 #ifndef MATCHING_RESULT_H
 #define MATCHING_RESULT_H
 #include <opencv2/features2d/features2d.hpp>
-#include <hogman_minimal/graph/loadEdges3d.h>
 #include <Eigen/Core>
+#include "edge.h"
 
 class MatchingResult {
     public:
-        MatchingResult() : rmse(0.0) {
+        MatchingResult() : 
+          rmse(0.0), 
+          ransac_trafo(Eigen::Matrix4f::Identity()), 
+          final_trafo(Eigen::Matrix4f::Identity()), 
+          icp_trafo(Eigen::Matrix4f::Identity())
+        {
             edge.id1 = edge.id2 = -1;
         }
         std::vector<cv::DMatch> inlier_matches;
         std::vector<cv::DMatch> all_matches;
-        AISNavigation::LoadedEdge3D edge;
+        LoadedEdge3D edge;
         float rmse;
         Eigen::Matrix4f ransac_trafo;
-        Eigen::Matrix4f icp_trafo;
         Eigen::Matrix4f final_trafo;
+        Eigen::Matrix4f icp_trafo;
     public:
       EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };

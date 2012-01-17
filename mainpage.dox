@@ -4,7 +4,7 @@
 
 \b RGBD-SLAM Implements a SLAM-Frontend based on structure from 
 motion using visual features to identify keypoints in the RGBD
-image of a kinect. It makes use of the HOG-MAN SLAM backend to
+image of a kinect. It makes use of the g2o SLAM backend to
 compute a globally consistent trajectory from the individual
 transformations provided by the frontend.
 
@@ -25,7 +25,8 @@ Provides functionality to send (ROS-Msgs) or save (to PCD File) the globally con
 The following classes are mainly for communication with ROS and the user:
 <ul>
 <li>OpenNIListener - Subscribes to the openni topics, constructs a node for each image-pointcloud pair and hands it to the graph manager. Online visualization results are sent out.</li>
-<li>UserInterface - Constructs a QT GUI for easy control of the program</li>
+<li>Graphical_UI - Constructs a QT GUI for easy control of the program</li>
+<li>RosUi - a UI for controlling the program via ROS service calls</li>
 <li>QtROS - Sets up a thread for ROS event processing, to seperate SLAM-computations from the GUI</li>
 <li>GLViewer - OpenGL based display of the 3d model</li>
 </ul>

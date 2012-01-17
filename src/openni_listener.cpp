@@ -21,7 +21,7 @@
 #include "pcl/common/transform.h"
 #include "pcl_ros/transforms.h"
 #include "openni_listener.h"
-#include <cv_bridge/CvBridge.h>
+#include <cv_bridge/cv_bridge.h>
 #include <opencv2/imgproc/imgproc.hpp>
 #include <iostream>
 #include <sstream>
@@ -30,266 +30,556 @@
 #include <ctime>
 #include <sensor_msgs/PointCloud2.h>
 #include <Eigen/Core>
-//#include <QMessageBox>
 #include "node.h"
+#include "misc.h"
+//#include <image_geometry/pinhole_camera_model.h>
+#include "pcl/ros/for_each_type.h"
+
+//For rosbag reading
+#include <rosbag/view.h>
+#include <boost/foreach.hpp>
+
 
 #include "parameter_server.h"
+//for comparison with ground truth from mocap and movable cameras on robots
+#include <tf/transform_listener.h>
+
+typedef message_filters::Subscriber<sensor_msgs::Image> image_sub_type;      
+typedef message_filters::Subscriber<sensor_msgs::CameraInfo> cinfo_sub_type;      
+typedef message_filters::Subscriber<sensor_msgs::PointCloud2> pc_sub_type;      
+typedef message_filters::Subscriber<sensor_msgs::PointCloud2> pc_sub_type;      
 
 
-OpenNIListener::OpenNIListener(ros::NodeHandle nh, GraphManager* graph_mgr,
-                               const char* visual_topic, 
-                               const char* depth_topic, const char* cloud_topic, 
-                               const char* detector_type, const char* extractor_type) 
+
+
+OpenNIListener::OpenNIListener(ros::NodeHandle nh, GraphManager* graph_mgr)
 : graph_mgr_(graph_mgr),
-  visual_sub_ (nh, visual_topic, ParameterServer::instance()->get<int>("subscriber_queue_size")),
-  depth_sub_(nh, depth_topic, ParameterServer::instance()->get<int>("subscriber_queue_size")),
-  cloud_sub_(nh, cloud_topic, ParameterServer::instance()->get<int>("subscriber_queue_size")),
-  sync_(MySyncPolicy(ParameterServer::instance()->get<int>("subscriber_queue_size")),  visual_sub_, depth_sub_, cloud_sub_),
+  stereo_sync_(NULL), kinect_sync_(NULL), no_cloud_sync_(NULL),
+  visua_sub_(NULL), depth_sub_(NULL), cloud_sub_(NULL),
   depth_mono8_img_(cv::Mat()),
-  nh_(nh),
-  /*callback_counter_(0),*/
   save_bag_file(false),
   pause_(ParameterServer::instance()->get<bool>("start_paused")),
   getOneFrame_(false),
-  first_frame_(true)
-  //pc_pub(nh.advertise<sensor_msgs::PointCloud2>("transformed_cloud", 2))
+  first_frame_(true),
+  tflistener_(new tf::TransformListener(nh)),
+  data_id_(0)
 {
-  // ApproximateTime takes a queue size as its constructor argument, hence MySyncPolicy(10)
-  sync_.registerCallback(boost::bind(&OpenNIListener::cameraCallback, this, _1, _2, _3));
-  ROS_INFO_STREAM("Listening to " << visual_topic << ", " << depth_topic \
-                   << " and " << cloud_topic << "\n"); 
-  detector_ = this->createDetector(detector_type);
-  ROS_FATAL_COND(detector_.empty(), "No valid opencv keypoint detector!");
-  extractor_ = this->createDescriptorExtractor(extractor_type);
-  matcher_ = new cv::BruteForceMatcher<cv::L2<float> >() ;
-
   ParameterServer* params = ParameterServer::instance();
-  pub_cloud_ = nh.advertise<sensor_msgs::PointCloud2> (params->get<std::string>("topic_reframed_cloud"),
-		  params->get<int>("publisher_queue_size"));
-  pub_transf_cloud_ = nh.advertise<sensor_msgs::PointCloud2> (
-		  params->get<std::string>("topic_transformed_cloud"), params->get<int>("publisher_queue_size"));
-  pub_ref_cloud_ = nh.advertise<sensor_msgs::PointCloud2>(params->get<std::string>("topic_first_cloud"),
-		  params->get<int>("publisher_queue_size"));
-  
+  int q = params->get<int>("subscriber_queue_size");
+  std::string bagfile_name = params->get<std::string>("bagfile_name");
+  std::string visua_tpc = params->get<std::string>("topic_image_mono");
+  std::string depth_tpc = params->get<std::string>("topic_image_depth");
+  std::string cinfo_tpc = params->get<std::string>("camera_info_topic");
+
+  if(bagfile_name.empty()){
+    std::string cloud_tpc = params->get<std::string>("topic_points");
+    std::string widev_tpc = params->get<std::string>("wide_topic");
+    std::string widec_tpc = params->get<std::string>("wide_cloud_topic");
+
+    //All information from Kinect
+    if(!visua_tpc.empty() && !depth_tpc.empty() && !cloud_tpc.empty())
+    {   
+        visua_sub_ = new image_sub_type(nh, visua_tpc, q);
+        depth_sub_ = new image_sub_type (nh, depth_tpc, q);
+        cloud_sub_ = new pc_sub_type (nh, cloud_tpc, q);  
+        kinect_sync_ = new message_filters::Synchronizer<KinectSyncPolicy>(KinectSyncPolicy(q),  *visua_sub_, *depth_sub_, *cloud_sub_),
+        kinect_sync_->registerCallback(boost::bind(&OpenNIListener::kinectCallback, this, _1, _2, _3));
+        ROS_INFO_STREAM("Listening to " << visua_tpc << ", " << depth_tpc << " and " << cloud_tpc);
+    } 
+    //No cloud, but visual image and depth
+    else if(!visua_tpc.empty() && !depth_tpc.empty() && !cinfo_tpc.empty() && cloud_tpc.empty())
+    {   
+        visua_sub_ = new image_sub_type(nh, visua_tpc, q);
+        depth_sub_ = new image_sub_type(nh, depth_tpc, q);
+        cinfo_sub_ = new cinfo_sub_type(nh, cinfo_tpc, q);
+        no_cloud_sync_ = new message_filters::Synchronizer<NoCloudSyncPolicy>(NoCloudSyncPolicy(q),  *visua_sub_, *depth_sub_, *cinfo_sub_);
+        no_cloud_sync_->registerCallback(boost::bind(&OpenNIListener::noCloudCallback, this, _1, _2, _3));
+        ROS_INFO_STREAM("Listening to " << visua_tpc << " and " << depth_tpc);
+    } 
+
+    //All information from stereo                                               
+    if(!widec_tpc.empty() && !widec_tpc.empty())
+    {   
+      visua_sub_ = new image_sub_type(nh, widev_tpc, q);
+      cloud_sub_ = new pc_sub_type(nh, widec_tpc, q);
+      stereo_sync_ = new message_filters::Synchronizer<StereoSyncPolicy>(StereoSyncPolicy(q), *visua_sub_, *cloud_sub_);
+      stereo_sync_->registerCallback(boost::bind(&OpenNIListener::stereoCallback, this, _1, _2));
+      ROS_INFO_STREAM("Listening to " << widev_tpc << " and " << widec_tpc );
+    } 
+
+    detector_ = createDetector(params->get<std::string>("feature_detector_type"));
+    extractor_ = createDescriptorExtractor(params->get<std::string>("feature_extractor_type"));
+
+    if(params->get<bool>("concurrent_node_construction")){
+      ROS_INFO("Threads used by QThreadPool on this Computer %i. Will increase this by one, b/c the QtRos Thread is very lightweight", QThread::idealThreadCount());
+      QThreadPool::globalInstance()->setMaxThreadCount(QThread::idealThreadCount()*2+2);
+    }
+
+  } 
+  else //Bagfile given
+  {
+
+    tf_pub_ = nh.advertise<tf::tfMessage>("/tf", 10);
+    //All information from Kinect
+    if(!visua_tpc.empty() && !depth_tpc.empty() && !cinfo_tpc.empty())
+    {   
+      // Set up fake subscribers to capture images
+      depth_img_sub_ = new BagSubscriber<sensor_msgs::Image>();
+      rgb_img_sub_ = new BagSubscriber<sensor_msgs::Image>();
+      cam_info_sub_ = new BagSubscriber<sensor_msgs::CameraInfo>();
+      no_cloud_sync_ = new message_filters::Synchronizer<NoCloudSyncPolicy>(NoCloudSyncPolicy(q),  *rgb_img_sub_, *depth_img_sub_, *cam_info_sub_);
+      no_cloud_sync_->registerCallback(boost::bind(&OpenNIListener::noCloudCallback, this, _1, _2, _3));
+      ROS_INFO_STREAM("Listening to " << visua_tpc << " and " << depth_tpc);
+    } 
+
+
+    detector_ = createDetector(params->get<std::string>("feature_detector_type"));
+    extractor_ = createDescriptorExtractor(params->get<std::string>("feature_extractor_type"));
+    QtConcurrent::run(this, &OpenNIListener::loadBag, bagfile_name);
+
+    if(params->get<bool>("concurrent_node_construction")){
+      ROS_INFO("Threads used by QThreadPool on this Computer %i. Will increase this by two, b/c the QtRos and loadBag threads are lightweight", QThread::idealThreadCount());
+      QThreadPool::globalInstance()->setMaxThreadCount(QThread::idealThreadCount()+2);
+    }
+  }
+}
+
+ 
+//! Load data from bag file
+/**This function reads the sensor input from a bagfile specified in the parameter bagfile_name.
+ * It is meant for offline processing of each frame */
+void OpenNIListener::loadBag(const std::string &filename)
+{
+  struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
+  ROS_INFO("Loading Bagfile %s", filename.c_str());
+  { //bag will be destructed after this block (hopefully frees memory for the optimizer)
+    rosbag::Bag bag;
+    try{
+      bag.open(filename, rosbag::bagmode::Read);
+    } catch(rosbag::BagIOException ex) {
+      ROS_FATAL("Opening Bagfile %s failed: %s Quitting!", filename.c_str(), ex.what());
+      ros::shutdown();
+      return;
+    }
+    ROS_INFO("Opened Bagfile %s", filename.c_str());
+
+    ParameterServer* params = ParameterServer::instance();
+    std::string visua_tpc = params->get<std::string>("topic_image_mono");
+    std::string depth_tpc = params->get<std::string>("topic_image_depth");
+    std::string cinfo_tpc = params->get<std::string>("camera_info_topic");
+    std::string tf_tpc = std::string("/tf");
+
+    // Image topics to load for bagfiles
+    std::vector<std::string> topics;
+    topics.push_back(visua_tpc);
+    topics.push_back(depth_tpc);
+    topics.push_back(cinfo_tpc);
+    topics.push_back(tf_tpc);
+
+    rosbag::View view(bag, rosbag::TopicQuery(topics));
+   // int lc=0; 
+    // Simulate sending of the messages in the bagfile
+    BOOST_FOREACH(rosbag::MessageInstance const m, view)
+    {
+    //  if(lc++ > 1000) break;
+      do{ 
+        usleep(150);
+        if(!ros::ok()) return;
+      } while(pause_);
+
+      if (m.getTopic() == visua_tpc || ("/" + m.getTopic() == visua_tpc))
+      {
+        sensor_msgs::Image::ConstPtr rgb_img = m.instantiate<sensor_msgs::Image>();
+        if (rgb_img) rgb_img_sub_->newMessage(rgb_img);
+        ROS_DEBUG("Found Message of %s", visua_tpc.c_str());
+      }
+      
+      if (m.getTopic() == depth_tpc || ("/" + m.getTopic() == depth_tpc))
+      {
+        sensor_msgs::Image::ConstPtr depth_img = m.instantiate<sensor_msgs::Image>();
+        if (depth_img) depth_img_sub_->newMessage(depth_img);
+        ROS_DEBUG("Found Message of %s", depth_tpc.c_str());
+      }
+      if (m.getTopic() == cinfo_tpc || ("/" + m.getTopic() == cinfo_tpc))
+      {
+        sensor_msgs::CameraInfo::ConstPtr cam_info = m.instantiate<sensor_msgs::CameraInfo>();
+        if (cam_info) cam_info_sub_->newMessage(cam_info);
+        ROS_DEBUG("Found Message of %s", cinfo_tpc.c_str());
+      }
+      if (m.getTopic() == tf_tpc|| ("/" + m.getTopic() == tf_tpc)){
+        tf::tfMessage::ConstPtr tf_msg = m.instantiate<tf::tfMessage>();
+        if (tf_msg) {
+          //prevents missing callerid warning
+          boost::shared_ptr<std::map<std::string, std::string> > msg_header_map = tf_msg->__connection_header;
+          (*msg_header_map)["callerid"] = "rgbdslam";
+          tf_pub_.publish(tf_msg);
+          ROS_DEBUG("Found Message of %s", tf_tpc.c_str());
+        }
+      }
+    }
+    ROS_INFO("Finished processing of Bagfile");
+    bag.close();
+  }
+  do{ 
+    if(!future_.isFinished()){
+      graph_mgr_->finishUp();
+      future_.waitForFinished(); //Wait if GraphManager ist still computing. 
+    }
+    usleep(1000000); //give it a chance to receive further messages
+    if(!ros::ok()) return;
+    ROS_WARN("Waiting for processing to finish.");
+  } while(graph_mgr_->isBusy());
+
+  if(ParameterServer::instance()->get<bool>("batch_processing")){
+    graph_mgr_->saveTrajectory(QString(filename.c_str()) + "before_optimization");
+    graph_mgr_->optimizeGraph(20);
+    ROS_INFO("Finished with 1st optimization");
+    graph_mgr_->saveTrajectory(QString(filename.c_str()) + "after1_optimization");
+    graph_mgr_->sanityCheck(100.0); //no trajectory is larger than a 100m
+    graph_mgr_->pruneEdgesWithErrorAbove(1.5);
+    graph_mgr_->optimizeGraph(20);
+    ROS_INFO("Finished with 2nd optimization");
+    graph_mgr_->saveTrajectory(QString(filename.c_str()) + "after2_optimization");
+    if(ParameterServer::instance()->get<bool>("store_pointclouds")){
+      graph_mgr_->saveIndividualClouds(QString(filename.c_str()), false);//not threaded
+    }
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
+    if(!ParameterServer::instance()->get<bool>("use_gui")){
+      Q_EMIT bagFinished();
+      ros::shutdown();
+      usleep(10000000);//10sec to allow all threads to finish (don't know how much is required)
+      if(ros::ok()){
+        ROS_ERROR("Should have shutdown meanwhile");
+        exit(1);
+      }
+    }
+  }
+  clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
+}
+
+void OpenNIListener::stereoCallback(const sensor_msgs::ImageConstPtr& visual_img_msg, const sensor_msgs::PointCloud2ConstPtr& point_cloud)
+{
+    struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
+    ROS_INFO("Received data from stereo cam");
+    ROS_INFO_ONCE("First RGBD-Data Received");
+    if(++data_id_ % ParameterServer::instance()->get<int>("data_skip_step") != 0){ 
+      ROS_INFO_THROTTLE(1, "Skipping Frame %i because of data_skip_step setting (this msg is only shown once a sec)", data_id_);
+      return;
+    };
+
+    //calculate depthMask
+    cv::Mat_<uchar> depth_img(visual_img_msg->height, visual_img_msg->width);
+    float value;
+    unsigned int pt_ctr = 0;
+    for(unsigned int y = 0; y < visual_img_msg->height; y++){
+        for(unsigned int x = 0; x < visual_img_msg->width; x++){
+            const uchar* value_ch_ptr = &(point_cloud->data[pt_ctr]);
+            value = *((const float*)value_ch_ptr);
+            pt_ctr += point_cloud->point_step;
+            if(value != value){//isnan
+                depth_img(y,x) = 0;
+            }else{
+                depth_img(y,x) = (char)(value*100.0); //Full white at 2.55 meter
+            }
+        }
+    }
+
+    //Get images into OpenCV format
+    //sensor_msgs::CvBridge bridge;
+    cv::Mat visual_img =  cv_bridge::toCvCopy(visual_img_msg, "mono8")->image;
+    if(visual_img.rows != depth_img.rows ||
+       visual_img.cols != depth_img.cols ||
+       point_cloud->width != (uint32_t) visual_img.cols ||
+       point_cloud->height != (uint32_t) visual_img.rows){
+      ROS_ERROR("PointCloud, depth and visual image differ in size! Ignoring Data");
+      return;
+    }
+
+    if (bagfile_mutex.tryLock() && save_bag_file){
+       // todo: make the names dynamic
+       bag.write("/wide_stereo/points2", ros::Time::now(), point_cloud);
+       bag.write("/wide_stereo/left/image_mono", ros::Time::now(), visual_img_msg);
+       ROS_INFO_STREAM("Wrote to bagfile " << bag.getFileName());
+       bagfile_mutex.unlock();
+       if(pause_) return;
+    }
+    pointcloud_type::Ptr pc_col(new pointcloud_type());//will belong to node
+    if(ParameterServer::instance()->get<bool>("use_gui")){
+      Q_EMIT newVisualImage(cvMat2QImage(visual_img, 0)); //visual_idx=0
+      Q_EMIT newDepthImage (cvMat2QImage(depth_img,1));//overwrites last cvMat2QImage
+    }
+    pcl::fromROSMsg(*point_cloud,*pc_col);
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
+    cameraCallback(visual_img, pc_col, depth_img);
+}
+
+OpenNIListener::~OpenNIListener(){
+  delete tflistener_;
+}
+
+void OpenNIListener::noCloudCallback (const sensor_msgs::ImageConstPtr& visual_img_msg,
+                                      const sensor_msgs::ImageConstPtr& depth_img_msg,
+                                      const sensor_msgs::CameraInfoConstPtr& cam_info_msg) 
+{
+  struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
+  ROS_INFO_ONCE("First RGBD-Data Received");
+  ROS_DEBUG("Received data from kinect");
+  ParameterServer* ps = ParameterServer::instance();
+
+  // If only a subset of frames are used, skip computations but visualize if gui is running
+  if(++data_id_ % ps->get<int>("data_skip_step") != 0){ 
+    ROS_INFO_THROTTLE(1, "Skipping Frame %i because of data_skip_step setting (this msg is only shown once a sec)", data_id_);
+    if(ps->get<bool>("use_gui")){//Show the image, even if not using it
+      //sensor_msgs::CvBridge bridge;
+      cv::Mat depth_float_img = cv_bridge::toCvCopy(depth_img_msg)->image;
+      cv::Mat visual_img =  cv_bridge::toCvCopy(visual_img_msg)->image;
+      if(visual_img.rows != depth_float_img.rows || 
+         visual_img.cols != depth_float_img.cols){
+        ROS_ERROR("depth and visual image differ in size! Ignoring Data");
+        return;
+      }
+      depthToCV8UC1(depth_float_img, depth_mono8_img_); //float can't be visualized or used as mask in float format TODO: reprogram keypoint detector to use float values with nan to mask
+      Q_EMIT newVisualImage(cvMat2QImage(visual_img, 0)); //visual_idx=0
+      Q_EMIT newDepthImage (cvMat2QImage(depth_mono8_img_,1));//overwrites last cvMat2QImage
+    }
+    return;
+  }
+
+
+  //Convert images to OpenCV format
+  //sensor_msgs::CvBridge bridge;
+  //cv::Mat depth_float_img = bridge.imgMsgToCv(depth_img_msg);
+  //cv::Mat visual_img =  bridge.imgMsgToCv(visual_img_msg);
+  cv::Mat depth_float_img = cv_bridge::toCvCopy(depth_img_msg)->image;
+  cv::Mat visual_img =  cv_bridge::toCvCopy(visual_img_msg)->image;
+  if(visual_img.rows != depth_float_img.rows || 
+     visual_img.cols != depth_float_img.cols){
+    ROS_ERROR("depth and visual image differ in size! Ignoring Data");
+    return;
+  }
+
+  depthToCV8UC1(depth_float_img, depth_mono8_img_); //float can't be visualized or used as mask in float format TODO: reprogram keypoint detector to use float values with nan to mask
+
+  if(asyncFrameDrop(depth_img_msg->header.stamp, visual_img_msg->header.stamp)) 
+    return;
+
+  if (bagfile_mutex.tryLock() && save_bag_file){
+     // todo: make the names dynamic
+     bag.write("/camera/rgb/image_mono", ros::Time::now(), visual_img_msg);
+     bag.write("/camera/depth/image", ros::Time::now(), depth_img_msg);
+     ROS_INFO_STREAM("Wrote to bagfile " << bag.getFileName());
+     bagfile_mutex.unlock();
+     if(pause_) return;
+  }
+
+  if(ps->get<bool>("use_gui")){
+    Q_EMIT newVisualImage(cvMat2QImage(visual_img, 0)); //visual_idx=0
+    Q_EMIT newDepthImage (cvMat2QImage(depth_mono8_img_,1));//overwrites last cvMat2QImage
+  }
+  if(ps->get<bool>("store_pointclouds") || 
+     (ps->get<bool>("use_glwidget") && ps->get<bool>("use_gui")) ||
+     ps->get<bool>("use_icp")){
+    pointcloud_type::Ptr pc_col(createXYZRGBPointCloud(depth_img_msg, visual_img_msg, cam_info_msg));
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
+    cameraCallback(visual_img, pc_col, depth_mono8_img_);
+
+  }
+  else {
+    //Headless run without pointcloud storage
+    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
+    noCloudCameraCallback(visual_img, depth_float_img, depth_mono8_img_, depth_img_msg->header, cam_info_msg);
+  }
 }
 
 
-
-void OpenNIListener::cameraCallback (const sensor_msgs::ImageConstPtr& visual_img_msg, 
+void OpenNIListener::kinectCallback (const sensor_msgs::ImageConstPtr& visual_img_msg,//got to be mono?
                                      const sensor_msgs::ImageConstPtr& depth_img_msg,   
-                                     const sensor_msgs::PointCloud2ConstPtr& point_cloud) {
-  std::clock_t starttime=std::clock();
+                                     const sensor_msgs::PointCloud2ConstPtr& point_cloud) 
+{
+  /// \callgraph
+  struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
   ROS_DEBUG("Received data from kinect");
+  ROS_INFO_ONCE("First RGBD-Data Received");
 
   //Get images into OpenCV format
-	sensor_msgs::CvBridge bridge;
-	cv::Mat depth_float_img = bridge.imgMsgToCv(depth_img_msg); 
-	cv::Mat visual_img =  bridge.imgMsgToCv(visual_img_msg, "mono8");
+  //sensor_msgs::CvBridge bridge;
+  //cv::Mat depth_float_img = bridge.imgMsgToCv(depth_img_msg);
+  //cv::Mat visual_img =  bridge.imgMsgToCv(visual_img_msg);
+  cv::Mat depth_float_img = cv_bridge::toCvCopy(depth_img_msg)->image;
+  cv::Mat visual_img =  cv_bridge::toCvCopy(visual_img_msg)->image;
   if(visual_img.rows != depth_float_img.rows || 
      visual_img.cols != depth_float_img.cols ||
+
      point_cloud->width != (uint32_t) visual_img.cols ||
      point_cloud->height != (uint32_t) visual_img.rows){
     ROS_ERROR("PointCloud, depth and visual image differ in size! Ignoring Data");
     return;
   }
   depthToCV8UC1(depth_float_img, depth_mono8_img_); //float can't be visualized or used as mask in float format TODO: reprogram keypoint detector to use float values with nan to mask
-   
 
-  Q_EMIT newVisualImage(cvMat2QImage(visual_img, 0)); //visual_idx=0
-  Q_EMIT newDepthImage (cvMat2QImage(depth_mono8_img_,1));//overwrites last cvMat2QImage
+  if(asyncFrameDrop(depth_img_msg->header.stamp, visual_img_msg->header.stamp)) 
+    return;
+
+  if (bagfile_mutex.tryLock() && save_bag_file){
+     // todo: make the names dynamic
+     bag.write("/camera/rgb/points", ros::Time::now(), point_cloud);
+     bag.write("/camera/rgb/image_mono", ros::Time::now(), visual_img_msg);
+     bag.write("/camera/depth/image", ros::Time::now(), depth_img_msg);
+     ROS_INFO_STREAM("Wrote to bagfile " << bag.getFileName());
+     bagfile_mutex.unlock();
+     if(pause_) return;
+  }
+  if(ParameterServer::instance()->get<bool>("use_gui")){
+    Q_EMIT newVisualImage(cvMat2QImage(visual_img, 0)); //visual_idx=0
+    Q_EMIT newDepthImage (cvMat2QImage(depth_mono8_img_,1));//overwrites last cvMat2QImage
+  }
+
+  pointcloud_type::Ptr pc_col(new pointcloud_type());//will belong to node
+  pcl::fromROSMsg(*point_cloud,*pc_col);
+  clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
+  cameraCallback(visual_img, pc_col, depth_mono8_img_);
+}
+
+
+
+
+void OpenNIListener::cameraCallback(cv::Mat visual_img, 
+                                    pointcloud_type::Ptr point_cloud, 
+                                    cv::Mat depth_mono8_img)
+{
+  struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
+  ROS_WARN_COND(point_cloud ==NULL, "Nullpointer for pointcloud");
+  if(getOneFrame_) { getOneFrame_ = false; }//if getOneFrame_ is set, unset it and skip check for  pause
+  else if(pause_ && !save_bag_file) { return; }//Visualization and nothing else
+
+  cv::Mat gray_img; 
+  if(visual_img.type() == CV_8UC3){ cvtColor(visual_img, gray_img, CV_RGB2GRAY); } 
+  else { gray_img = visual_img; }
+
+  //######### Main Work: create new node ##############################################################
+  Q_EMIT setGUIStatus("Computing Keypoints and Features");
+  Node* node_ptr = new Node(gray_img, detector_, extractor_, point_cloud, depth_mono8_img);
+
+  retrieveTransformations(point_cloud->header, node_ptr);
+  callProcessing(visual_img, node_ptr);
+  clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
+}
+
+
+
+
+
+
+void OpenNIListener::noCloudCameraCallback(cv::Mat visual_img, 
+                                           cv::Mat depth, 
+                                           cv::Mat depth_mono8_img,
+                                           std_msgs::Header depth_header,
+                                           const sensor_msgs::CameraInfoConstPtr& cam_info)
+{
+  struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
   if(getOneFrame_) { //if getOneFrame_ is set, unset it and skip check for  pause
       getOneFrame_ = false;
   } else if(pause_ && !save_bag_file) { //Visualization and nothing else
     return; 
   }
-
-  ros::Time d_time = depth_img_msg->header.stamp;
-  ros::Time rgb_time = visual_img_msg->header.stamp;
-  ros::Time pc_time = point_cloud->header.stamp;
-  long rgb_timediff = abs(static_cast<long>(rgb_time.nsec) - static_cast<long>(pc_time.nsec));
-  if(d_time.nsec != pc_time.nsec ||rgb_timediff > 33333333){
-      ROS_WARN_COND(d_time.nsec != pc_time.nsec, "PointCloud doesn't correspond to depth image");
-      ROS_WARN_COND(rgb_timediff > 33333333, "Point cloud and RGB image off more than 1/30sec: %li (nsec)", rgb_timediff);
-      ROS_WARN_COND(ParameterServer::instance()->get<bool>("drop_async_frames"), "Asynchronous frames ignored. See parameters if you want to keep async frames.");
-      ROS_INFO("Depth image time: %d - %d", d_time.sec,   d_time.nsec);
-      ROS_INFO("RGB   image time: %d - %d", rgb_time.sec, rgb_time.nsec);
-      ROS_INFO("Point cloud time: %d - %d", pc_time.sec,  pc_time.nsec);
-      getOneFrame_ = true; //more luck next time?
-      if(ParameterServer::instance()->get<bool>("drop_async_frames"))return;
+  cv::Mat gray_img; 
+  if(visual_img.type() == CV_8UC3){
+    cvtColor(visual_img, gray_img, CV_RGB2GRAY);
   } else {
-      ROS_DEBUG("Depth image time: %d - %d", d_time.sec,   d_time.nsec);
-      ROS_DEBUG("RGB   image time: %d - %d", rgb_time.sec, rgb_time.nsec);
-      ROS_DEBUG("Point cloud time: %d - %d", pc_time.sec,  pc_time.nsec);
+    gray_img = visual_img;
   }
 
-	if (bagfile_mutex.tryLock() && save_bag_file){
-		// todo: make the names dynamic
-		bag.write("/camera/rgb/points", ros::Time::now(), point_cloud);
-		bag.write("/camera/rgb/image_mono", ros::Time::now(), visual_img_msg);
-		bag.write("/camera/depth/image", ros::Time::now(), depth_img_msg);
-    ROS_INFO_STREAM("Wrote to bagfile " << bag.getFileName());
-    bagfile_mutex.unlock();
-    if(pause_) return; 
-	}
-
-
-  //ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > min_time_reported, "timings", "Callback runtime before addNode: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
-
-  //######### Main Work: create new node an add it to the graph ###############################
+  //######### Main Work: create new node ##############################################################
   Q_EMIT setGUIStatus("Computing Keypoints and Features");
-  //TODO: make it an reference counting pointer object?
-  std::clock_t node_creation_time=std::clock();
-  Node* node_ptr = new Node(nh_,visual_img, detector_, extractor_, matcher_,
-                            point_cloud, depth_mono8_img_);
-  if((std::clock()-node_creation_time)/(double)CLOCKS_PER_SEC > 15.0){
-      pause_ = true;
-      setGUIInfo("<span style='color:red'>Node creation took more than 15 seconds. Paused processing to prevent CPU overload</span>");
-      ROS_WARN("Node creation was really slow (>15s). Processing has been paused to prevent the computer from overload!");
-      //delete node_ptr;
-      //return; 
-  }
-  std::clock_t parallel_wait_time=std::clock();
-  future_.waitForFinished(); //Wait if GraphManager ist still computing. Does this skip on empty qfuture?
-  ROS_INFO_STREAM_NAMED("timings", "waiting time: "<< ( std::clock() - parallel_wait_time ) / (double)CLOCKS_PER_SEC  <<"sec"); 
-  //Q_EMIT newVisualImage(cvMat2QImage(visual_img, 0)); //visual_idx=0
-  //Q_EMIT newDepthImage (cvMat2QImage(visual_img, depth_mono8_img_,depth_mono8_img_,1));//overwrites last cvMat2QImage
-  //processNode runs in the background and after finishing visualizes the results
-//#define CONCURRENT_NODE_CONSTRUCTION 1
-#ifdef CONCURRENT_NODE_CONSTRUCTION
-  ROS_WARN("Processing Node in parallel");
-  future_ =  QtConcurrent::run(this, &OpenNIListener::processNode, visual_img, point_cloud, node_ptr);
-#else
-  processNode(visual_img, point_cloud, node_ptr);
-#endif
-  ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << "runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
+  Node* node_ptr = new Node(gray_img, depth, depth_mono8_img, cam_info, depth_header, detector_, extractor_);
+
+  retrieveTransformations(depth_header, node_ptr);//Retrieve the transform between the lens and the base-link at capturing time;
+
+  callProcessing(visual_img, node_ptr);
+  clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
 }
 
-void OpenNIListener::processNode(cv::Mat& visual_img,   // will be drawn to
-                                 const sensor_msgs::PointCloud2ConstPtr point_cloud,
-                                 Node* new_node){
-  std::clock_t starttime=std::clock();
-  Q_EMIT setGUIStatus("GraphSLAM");
+//Call function either regularly or as background thread
+void OpenNIListener::callProcessing(cv::Mat visual_img, Node* node_ptr)
+{
+  std::clock_t parallel_wait_time=std::clock();
+  if(!future_.isFinished()){
+    graph_mgr_->finishUp();
+    future_.waitForFinished(); //Wait if GraphManager ist still computing. 
+  }
+  ROS_INFO_STREAM_NAMED("timings", "waiting time: "<< ( std::clock() - parallel_wait_time ) / (double)CLOCKS_PER_SEC  <<"sec"); 
+
+  //update for visualization of the feature flow
+  visualization_img_ = visual_img; //No copy
+  visualization_depth_mono8_img_ = depth_mono8_img_;//No copy
+  //With this define, processNode runs in the background and after finishing visualizes the results
+  //Thus another Callback can be started in the meantime, to create a new node in parallel
+  if(ParameterServer::instance()->get<bool>("concurrent_node_construction")) {
+    ROS_DEBUG("Processing Node in parallel to the construction of the next node");
+    if(ParameterServer::instance()->get<bool>("use_gui")){
+      //visual_img points to the data received in the callback - which might be deallocated after the callback returns. 
+      //This will happen before visualization if processNode is running in background, therefore the data needs to be cloned
+      visualization_img_ = visual_img.clone();
+      visualization_depth_mono8_img_ = depth_mono8_img_.clone();
+    }
+    future_ = QtConcurrent::run(this, &OpenNIListener::processNode, node_ptr); 
+  }
+  else { //Non-concurrent
+    processNode(node_ptr);//regular function call
+  }
+}
+
+void OpenNIListener::processNode(Node* new_node)
+{
+  struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
+  Q_EMIT setGUIStatus("Adding Node to Graph");
   bool has_been_added = graph_mgr_->addNode(new_node);
 
   //######### Visualization code  #############################################
-  cv::Mat feature_img = cv::Mat::zeros(visual_img.rows, visual_img.cols, CV_8UC1);
-  if(has_been_added){
-      graph_mgr_->drawFeatureFlow(feature_img);
-      //Q_EMIT newFeatureFlowImage(cvMat2QImage(visual_img, 2)); //include the feature flow now
+  if(ParameterServer::instance()->get<bool>("use_gui")){
+    if(has_been_added){
+      if(ParameterServer::instance()->get<bool>("visualize_mono_depth_overlay")){
+        cv::Mat feature_img = cv::Mat( visualization_img_.rows, visualization_img_.cols, CV_8UC1); 
+        graph_mgr_->drawFeatureFlow(feature_img);
+        Q_EMIT newFeatureFlowImage(cvMat2QImage(visualization_img_,visualization_depth_mono8_img_, feature_img, 2)); //show registration
+      } else {
+        graph_mgr_->drawFeatureFlow(visualization_img_, cv::Scalar(255,0,0), cv::Scalar(0,128,0) );
+        Q_EMIT newFeatureFlowImage(cvMat2QImage(visualization_img_, 2)); //show registration
+      }
+    } else {
+      if(ParameterServer::instance()->get<bool>("visualize_mono_depth_overlay")){
+        cv::Mat feature_img = cv::Mat( visualization_img_.rows, visualization_img_.cols, CV_8UC1); 
+        cv::drawKeypoints(feature_img, new_node->feature_locations_2d_, feature_img, cv::Scalar(155), 5);
+        Q_EMIT newFeatureFlowImage(cvMat2QImage(visualization_img_,visualization_depth_mono8_img_, feature_img, 2)); //show registration
+      } else {
+        cv::drawKeypoints(visualization_img_, new_node->feature_locations_2d_, visualization_img_, cv::Scalar(155, 0,0), 5);
+        Q_EMIT newFeatureFlowImage(cvMat2QImage(visualization_img_, 2)); //show registration
+      }
+    }
   }
-  Q_EMIT newFeatureFlowImage(cvMat2QImage(visual_img,depth_mono8_img_, feature_img, 2)); //show registration
-  ROS_DEBUG("Sending PointClouds"); 
-  //if node position was optimized: publish received pointcloud in new frame
-  if (has_been_added && graph_mgr_->freshlyOptimized_ && (pub_cloud_.getNumSubscribers() > 0)){
-      ROS_INFO("Sending original pointcloud with appropriatly positioned frame"); 
-      sensor_msgs::PointCloud2 msg = *point_cloud;
-      msg.header.stamp = graph_mgr_->time_of_last_transform_;
-      msg.header.frame_id = "/slam_transform";
-      pub_cloud_.publish(msg);
-  }
-  //slow, mainly for debugging (and only done if subscribed to): Transform pointcloud to fixed coordinate system and resend 
-  if (has_been_added && graph_mgr_->freshlyOptimized_ && (pub_transf_cloud_.getNumSubscribers() > 0)){
-      ROS_WARN("Sending transformed pointcloud in fixed frame because /rgbdslam/transformed_slowdown_cloud was subscribed to. It's faster to subscribe to /rgbdslam/cloud instead"); 
-      pcl::PointCloud<pcl::PointXYZRGB> pcl_cloud;
-      pcl::fromROSMsg(*point_cloud, pcl_cloud);
-      pcl_ros::transformPointCloud(pcl_cloud, pcl_cloud, graph_mgr_->world2cam_ );
-      sensor_msgs::PointCloud2 msg; 
-      pcl::toROSMsg(pcl_cloud, msg);
-      msg.header.frame_id = "/openni_camera";
-      msg.header.stamp = ros::Time::now();
-      pub_transf_cloud_.publish(msg);
-  }
-  //when first node has been added,  send it out once unchanged as reference
-  if (first_frame_ && has_been_added && (pub_ref_cloud_.getNumSubscribers() > 0)){
-      ROS_INFO("Sending Reference PointCloud once"); 
-      pub_ref_cloud_.publish(*point_cloud);
-      first_frame_ = false;
-  }
-
   if(!has_been_added) delete new_node;
-  ROS_INFO_STREAM_COND_NAMED(( (std::clock()-starttime) / (double)CLOCKS_PER_SEC) > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << "runtime: "<< ( std::clock() - starttime ) / (double)CLOCKS_PER_SEC  <<"sec");
+  clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
 }
 
-
-using namespace cv;
-///Analog to opencv example file and modified to use adjusters
-FeatureDetector* OpenNIListener::createDetector( const string& detectorType ) {
-	ParameterServer* params = ParameterServer::instance();
-	FeatureDetector* fd = 0;
-    if( !detectorType.compare( "FAST" ) ) {
-        //fd = new FastFeatureDetector( 20/*threshold*/, true/*nonmax_suppression*/ );
-        fd = new DynamicAdaptedFeatureDetector (new FastAdjuster(20,true), 
-												params->get<int>("adjuster_min_keypoints"),
-												params->get<int>("adjuster_max_keypoints"),
-												params->get<int>("fast_adjuster_max_iterations"));
-    }
-    else if( !detectorType.compare( "STAR" ) ) {
-        fd = new StarFeatureDetector( 16/*max_size*/, 5/*response_threshold*/, 10/*line_threshold_projected*/,
-                                      8/*line_threshold_binarized*/, 5/*suppress_nonmax_size*/ );
-    }
-    else if( !detectorType.compare( "SIFT" ) ) {
-        fd = new SiftFeatureDetector(SIFT::DetectorParams::GET_DEFAULT_THRESHOLD(),
-                                     SIFT::DetectorParams::GET_DEFAULT_EDGE_THRESHOLD());
-        ROS_INFO("Default SIFT threshold: %f, Default SIFT Edge Threshold: %f", 
-                 SIFT::DetectorParams::GET_DEFAULT_THRESHOLD(),
-                 SIFT::DetectorParams::GET_DEFAULT_EDGE_THRESHOLD());
-    }
-    else if( !detectorType.compare( "SURF" ) ) {
-        fd = new DynamicAdaptedFeatureDetector(new SurfAdjuster(),
-        										params->get<int>("adjuster_min_keypoints"),
-												params->get<int>("adjuster_max_keypoints"),
-												params->get<int>("surf_adjuster_max_iterations"));
-    }
-    else if( !detectorType.compare( "MSER" ) ) {
-        fd = new MserFeatureDetector( 1/*delta*/, 60/*min_area*/, 14400/*_max_area*/, 0.35f/*max_variation*/,
-                0.2/*min_diversity*/, 200/*max_evolution*/, 1.01/*area_threshold*/, 0.003/*min_margin*/,
-                5/*edge_blur_size*/ );
-    }
-    else if( !detectorType.compare( "GFTT" ) ) {
-        fd = new GoodFeaturesToTrackDetector( 200/*maxCorners*/, 0.001/*qualityLevel*/, 1./*minDistance*/,
-                                              5/*int _blockSize*/, true/*useHarrisDetector*/, 0.04/*k*/ );
-    }
-    else {
-      ROS_ERROR("No valid detector-type given: %s. Using SURF.", detectorType.c_str());
-      fd = createDetector("SURF"); //recursive call with correct parameter
-    }
-    ROS_ERROR_COND(fd == 0, "No detector could be created");
-    return fd;
-}
-
-DescriptorExtractor* OpenNIListener::createDescriptorExtractor( const string& descriptorType ) {
-    DescriptorExtractor* extractor = 0;
-    if( !descriptorType.compare( "SIFT" ) ) {
-        extractor = new SiftDescriptorExtractor();/*( double magnification=SIFT::DescriptorParams::GET_DEFAULT_MAGNIFICATION(), bool isNormalize=true, bool recalculateAngles=true, int nOctaves=SIFT::CommonParams::DEFAULT_NOCTAVES, int nOctaveLayers=SIFT::CommonParams::DEFAULT_NOCTAVE_LAYERS, int firstOctave=SIFT::CommonParams::DEFAULT_FIRST_OCTAVE, int angleMode=SIFT::CommonParams::FIRST_ANGLE )*/
-    }
-    else if( !descriptorType.compare( "SURF" ) ) {
-        extractor = new SurfDescriptorExtractor();/*( int nOctaves=4, int nOctaveLayers=2, bool extended=false )*/
-    }
-    else {
-      ROS_ERROR("No valid descriptor-matcher-type given: %s. Using SURF", descriptorType.c_str());
-      extractor = createDescriptorExtractor("SURF");
-    }
-    return extractor;
-}
 
 void OpenNIListener::toggleBagRecording(){
   bagfile_mutex.lock();
   save_bag_file = !save_bag_file;
-	// save bag
-	if (save_bag_file)
-	{
-		time_t rawtime; 
-		struct tm * timeinfo;
-		char buffer [80];
+  // save bag
+  if (save_bag_file)
+  {
+    time_t rawtime; 
+    struct tm * timeinfo;
+    char buffer [80];
 
-		time ( &rawtime );
-		timeinfo = localtime ( &rawtime );
+    time ( &rawtime );
+    timeinfo = localtime ( &rawtime );
     // create a nice name
-		strftime (buffer,80,"kinect_%Y-%m-%d-%H-%M-%S.bag",timeinfo);
+    strftime (buffer,80,"kinect_%Y-%m-%d-%H-%M-%S.bag",timeinfo);
 
-		bag.open(buffer, rosbag::bagmode::Write);
+    bag.open(buffer, rosbag::bagmode::Write);
     ROS_INFO_STREAM("Opened bagfile " << bag.getFileName());
-	} else {
+  } else {
     ROS_INFO_STREAM("Closing bagfile " << bag.getFileName());
     bag.close();
   }
@@ -298,6 +588,7 @@ void OpenNIListener::toggleBagRecording(){
 
 void OpenNIListener::togglePause(){
   pause_ = !pause_;
+  ROS_INFO("Pause toggled to: %s", pause_? "true":"false");
   if(pause_) Q_EMIT setGUIStatus("Processing Thread Stopped");
   else Q_EMIT setGUIStatus("Processing Thread Running");
 }
@@ -316,16 +607,21 @@ QImage OpenNIListener::cvMat2QImage(const cv::Mat& channel1, const cv::Mat& chan
   if(channel1.rows != rgba_buffers_[idx].rows || channel1.cols != rgba_buffers_[idx].cols){
     ROS_DEBUG("Created new rgba_buffer with index %i", idx);
     rgba_buffers_[idx] = cv::Mat( channel1.rows, channel1.cols, CV_8UC4); 
-    printMatrixInfo(rgba_buffers_[idx]);
+    //printMatrixInfo(rgba_buffers_[idx]);
+  }
+  cv::Mat mono_channel1 = channel1; 
+  if(channel1.type() != CV_8UC1) {
+    mono_channel1 = cv::Mat( channel1.rows, channel1.cols, CV_8UC1); 
+    cv::cvtColor(channel1, mono_channel1, CV_RGB2GRAY);
   }
   std::vector<cv::Mat> input;
   cv::Mat alpha( channel1.rows, channel1.cols, CV_8UC1, cv::Scalar(255)); //TODO this could be buffered for performance
-  input.push_back(channel1);
+  input.push_back(mono_channel1);
   input.push_back(channel2);
   input.push_back(channel3);
   input.push_back(alpha);
   cv::merge(input, rgba_buffers_[idx]);
-  printMatrixInfo(rgba_buffers_[idx]);
+  //printMatrixInfo(rgba_buffers_[idx]);
   return QImage((unsigned char *)(rgba_buffers_[idx].data), 
                 rgba_buffers_[idx].cols, rgba_buffers_[idx].rows, 
                 rgba_buffers_[idx].step, QImage::Format_RGB32 );
@@ -341,146 +637,67 @@ QImage OpenNIListener::cvMat2QImage(const cv::Mat& image, unsigned int idx){
   if(image.rows != rgba_buffers_[idx].rows || image.cols != rgba_buffers_[idx].cols){
     ROS_DEBUG("Created new rgba_buffer with index %i", idx);
     rgba_buffers_[idx] = cv::Mat( image.rows, image.cols, CV_8UC4); 
-    printMatrixInfo(rgba_buffers_[idx]);
+    //printMatrixInfo(rgba_buffers_[idx], "for QImage Buffering");
   }
   cv::Mat alpha( image.rows, image.cols, CV_8UC1, cv::Scalar(255)); //TODO this could be buffered for performance
   cv::Mat in[] = { image, alpha };
   // rgba[0] -> bgr[2], rgba[1] -> bgr[1],
   // rgba[2] -> bgr[0], rgba[3] -> alpha[0]
-  int from_to[] = { 0,0,  0,1,  0,2,  1,3 };
-  mixChannels( in , 2, &rgba_buffers_[idx], 1, from_to, 4 );
-  printMatrixInfo(rgba_buffers_[idx]);
-  //cv::cvtColor(image, rgba_buffers_, CV_GRAY2RGBA);}
-  //}
+
+  if(image.type() == CV_8UC1){
+    int from_to[] = { 0,0,  0,1,  0,2,  1,3 };
+    mixChannels( in , 2, &rgba_buffers_[idx], 1, from_to, 4 );
+  } else {
+    int from_to[] = { 2,0,  1,1,  0,2,  3,3 }; //BGR+A -> RGBA
+    mixChannels( in , 2, &rgba_buffers_[idx], 1, from_to, 4 );
+  }
+  //printMatrixInfo(rgba_buffers_[idx], "for QImage Buffering");
   return QImage((unsigned char *)(rgba_buffers_[idx].data), 
                 rgba_buffers_[idx].cols, rgba_buffers_[idx].rows, 
                 rgba_buffers_[idx].step, QImage::Format_RGB32 );
 }
 
-/*/ Old helper functions from earlier times. Could be useful lateron
-void transformPointCloud (const Eigen::Matrix4f &transform, const sensor_msgs::PointCloud2 &in,
-                          sensor_msgs::PointCloud2 &out)
+
+//Retrieve the transform between the lens and the base-link at capturing time
+void OpenNIListener::retrieveTransformations(std_msgs::Header depth_header, Node* node_ptr)
 {
-  // Get X-Y-Z indices
-  int x_idx = pcl::getFieldIndex (in, "x");
-  int y_idx = pcl::getFieldIndex (in, "y");
-  int z_idx = pcl::getFieldIndex (in, "z");
+  std::string base_frame  = ParameterServer::instance()->get<std::string>("base_frame_name");
+  std::string depth_frame_id = depth_header.frame_id;
+  ros::Time depth_time = depth_header.stamp;
+  tf::StampedTransform base2points;
 
-  if (x_idx == -1 || y_idx == -1 || z_idx == -1) {
-    ROS_ERROR ("Input dataset has no X-Y-Z coordinates! Cannot convert to Eigen format.");
-    return;
+  try{
+    tflistener_->waitForTransform(base_frame, depth_frame_id, depth_time, ros::Duration(0.1));
+    tflistener_->lookupTransform(base_frame, depth_frame_id, depth_time, base2points);
   }
-
-  if (in.fields[x_idx].datatype != sensor_msgs::PointField::FLOAT32 || 
-      in.fields[y_idx].datatype != sensor_msgs::PointField::FLOAT32 || 
-      in.fields[z_idx].datatype != sensor_msgs::PointField::FLOAT32) {
-    ROS_ERROR ("X-Y-Z coordinates not floats. Currently only floats are supported.");
-    return;
+  catch (tf::TransformException ex){
+    ROS_WARN("%s",ex.what());
+    ROS_WARN("Using Standard kinect /openni_camera -> /openni_rgb_optical_frame as transformation");
+    //emulate the transformation from kinect openni_camera frame to openni_rgb_optical_frame
+    base2points.setRotation(tf::createQuaternionFromRPY(-1.57,0,-1.57));
+    base2points.setOrigin(tf::Point(0,-0.04,0));
   }
-  // Check if distance is available
-  int dist_idx = pcl::getFieldIndex (in, "distance");
-  // Copy the other data
-  if (&in != &out)
-  {
-    out.header = in.header;
-    out.height = in.height;
-    out.width  = in.width;
-    out.fields = in.fields;
-    out.is_bigendian = in.is_bigendian;
-    out.point_step   = in.point_step;
-    out.row_step     = in.row_step;
-    out.is_dense     = in.is_dense;
-    out.data.resize (in.data.size ());
-    // Copy everything as it's faster than copying individual elements
-    memcpy (&out.data[0], &in.data[0], in.data.size ());
-  }
+  node_ptr->setBase2PointsTransform(base2points);
 
-  Eigen::Array4i xyz_offset (in.fields[x_idx].offset, in.fields[y_idx].offset, in.fields[z_idx].offset, 0);
-
-  for (size_t i = 0; i < in.width * in.height; ++i) {
-    Eigen::Vector4f pt (*(float*)&in.data[xyz_offset[0]], *(float*)&in.data[xyz_offset[1]], *(float*)&in.data[xyz_offset[2]], 1);
-    Eigen::Vector4f pt_out;
-    
-    bool max_range_point = false;
-    int distance_ptr_offset = i*in.point_step + in.fields[dist_idx].offset;
-    float* distance_ptr = (dist_idx < 0 ? NULL : (float*)(&in.data[distance_ptr_offset]));
-    if (!std::isfinite (pt[0]) || !std::isfinite (pt[1]) || !std::isfinite (pt[2])) {
-      if (distance_ptr==NULL || !std::isfinite(*distance_ptr)) { // Invalid point 
-        pt_out = pt;
-      } else { // max range point
-        pt[0] = *distance_ptr;  // Replace x with the x value saved in distance
-        pt_out = transform * pt;
-        max_range_point = true;
-        //std::cout << pt[0]<<","<<pt[1]<<","<<pt[2]<<" => "<<pt_out[0]<<","<<pt_out[1]<<","<<pt_out[2]<<"\n";
-      }
-    } else {
-      pt_out = transform * pt;
+  std::string gt_frame = ParameterServer::instance()->get<std::string>("ground_truth_frame_name");
+  if(!gt_frame.empty()){ 
+    //Retrieve the ground truth data. For the first frame it will be
+    //set as origin. the rest will be used to compare
+    tf::StampedTransform ground_truth_transform;
+    try{
+      tflistener_->waitForTransform(gt_frame, "/openni_camera", depth_time, ros::Duration(0.1));
+      tflistener_->lookupTransform(gt_frame, "/openni_camera", depth_time, ground_truth_transform);
+      tf::StampedTransform b2p;
+      //HACK to comply with Jürgen Sturm's Ground truth, though I can't manage here to get the full transform from tf
+      b2p.setRotation(tf::createQuaternionFromRPY(-1.57,0,-1.57));
+      b2p.setOrigin(tf::Point(0,-0.04,0));
+      ground_truth_transform *= b2p;
     }
-
-    if (max_range_point) {
-      // Save x value in distance again
-      *(float*)(&out.data[distance_ptr_offset]) = pt_out[0];
-      pt_out[0] = std::numeric_limits<float>::quiet_NaN();
-      //std::cout << __PRETTY_FUNCTION__<<": "<<i << "is a max range point.\n";
+    catch (tf::TransformException ex){
+      ROS_WARN("%s - Using Identity for Ground Truth",ex.what());
+      ground_truth_transform = tf::StampedTransform(tf::Transform::getIdentity(), depth_time, "/missing_ground_truth", "/openni_camera");
     }
-
-    memcpy (&out.data[xyz_offset[0]], &pt_out[0], sizeof (float));
-    memcpy (&out.data[xyz_offset[1]], &pt_out[1], sizeof (float));
-    memcpy (&out.data[xyz_offset[2]], &pt_out[2], sizeof (float));
-    
-    xyz_offset += in.point_step;
+    node_ptr->setGroundTruthTransform(ground_truth_transform);
   }
-
-  // Check if the viewpoint information is present
-  int vp_idx = pcl::getFieldIndex (in, "vp_x");
-  if (vp_idx != -1) {
-    // Transform the viewpoint info too
-    for (size_t i = 0; i < out.width * out.height; ++i) {
-      float *pstep = (float*)&out.data[i * out.point_step + out.fields[vp_idx].offset];
-      // Assume vp_x, vp_y, vp_z are consecutive
-      Eigen::Vector4f vp_in (pstep[0], pstep[1], pstep[2], 1);
-      Eigen::Vector4f vp_out = transform * vp_in;
-
-      pstep[0] = vp_out[0];
-      pstep[1] = vp_out[1];
-      pstep[2] = vp_out[2];
-    }
-  }
-}
-*/
-
-void depthToCV8UC1(const cv::Mat& float_img, cv::Mat& mono8_img){
-  //Process images
-  if(mono8_img.rows != float_img.rows || mono8_img.cols != float_img.cols){
-    mono8_img = cv::Mat(float_img.size(), CV_8UC1);}
-  //The following doesn't work due to NaNs
-  //double minVal, maxVal; 
-  //minMaxLoc(float_img, &minVal, &maxVal);
-  //ROS_DEBUG("Minimum/Maximum Depth in current image: %f/%f", minVal, maxVal);
-  //mono8_img = cv::Scalar(0);
-  //cv::line( mono8_img, cv::Point2i(10,10),cv::Point2i(200,100), cv::Scalar(255), 3, 8);
-  cv::convertScaleAbs(float_img, mono8_img, 100, 0.0);
-}
-
-//Little debugging helper functions
-std::string openCVCode2String(unsigned int code){
-  switch(code){
-    case 0 : return std::string("CV_8UC1" );
-    case 8 : return std::string("CV_8UC2" );
-    case 16: return std::string("CV_8UC3" );
-    case 24: return std::string("CV_8UC4" );
-    case 2 : return std::string("CV_16UC1");
-    case 10: return std::string("CV_16UC2");
-    case 18: return std::string("CV_16UC3");
-    case 26: return std::string("CV_16UC4");
-    case 5 : return std::string("CV_32FC1");
-    case 13: return std::string("CV_32FC2");
-    case 21: return std::string("CV_32FC3");
-    case 29: return std::string("CV_32FC4");
-  }
-  return std::string("Unknown");
-}
-
-void printMatrixInfo(cv::Mat& image){
-  ROS_DEBUG_STREAM("Matrix Type:" << openCVCode2String(image.type()) <<  " rows: " <<  image.rows  <<  " cols: " <<  image.cols);
+  // End: Fill in Transformation -----------------------------------------------------------------------
 }

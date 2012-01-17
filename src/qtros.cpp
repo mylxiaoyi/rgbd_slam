@@ -20,12 +20,14 @@
 QtROS::QtROS(int argc, char *argv[], const char* node_name) {
   std::cout << "Initializing Node...\n";
   ros::init(argc, argv, node_name);
-  n = new ros::NodeHandle("rgbdslam"); //Ros Namespace
+  n = new ros::NodeHandle(node_name); //Use node name as Ros Namespace
   ROS_INFO("Connected to roscore");
-  quitfromgui = false; }
+  quitfromgui = false; 
+}
 
 void QtROS::quitNow(){ 
-  quitfromgui = true; }
+  quitfromgui = true; 
+}
 
 void QtROS::run(){ 
   ros::Rate r(30); // 30 hz. Kinect has 30hz and we are far from processing every frame anyhow.

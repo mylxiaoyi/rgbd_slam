@@ -28,16 +28,14 @@
 #include <pcl/registration/icp.h>
 #include <pcl/registration/registration.h>
 #include <Eigen/Core>
-
-typedef pcl::PointXYZRGB Point;
-typedef pcl::PointCloud<pcl::PointXYZRGB> PointCloud_RGB;
+#include "parameter_server.h"
 
 
-void saveCloud(const char* filename, const PointCloud_RGB& pc, const int max_cnt = 10000, const bool color = false);
+void saveCloud(const char* filename, const pointcloud_type& pc, const int max_cnt = 10000, const bool color = false);
 
-void downSample(const PointCloud_RGB& src, PointCloud_RGB& to);
+void downSample(const pointcloud_type& src, pointcloud_type& to);
 
-bool gicpfallback(const PointCloud_RGB& from, const PointCloud_RGB& to, Eigen::Matrix4f& transform);
+bool gicpfallback(const pointcloud_type& from, const pointcloud_type& to, Eigen::Matrix4f& transform);
 
 
 

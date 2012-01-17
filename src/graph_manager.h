@@ -28,8 +28,6 @@
 #include <ros/ros.h>
 #include <tf/transform_broadcaster.h>
 #include "node.h"
-#include <hogman_minimal/graph_optimizer_hogman/graph_optimizer3d_hchol.h>
-#include <hogman_minimal/graph/loadEdges3d.h>
 #include <pcl/filters/voxel_grid.h>
 #include <Eigen/Core>
 #include <Eigen/Geometry>
@@ -40,18 +38,20 @@
 #include <QString>
 #include <QMatrix4x4>
 #include <QList>
+#include <QMutex>
+
 #include <iostream>
 #include <sstream>
 #include <string>
 #include <ctime>
 #include <memory> //for auto_ptr
-#include "glviewer.h"
 #include "parameter_server.h"
 
+#include "g2o/core/graph_optimizer_sparse.h"
+
+#include "g2o/core/hyper_dijkstra.h"
 
 //#define ROSCONSOLE_SEVERITY_INFO
-
-namespace AIS = AISNavigation;
 
 //!Computes a globally optimal trajectory from transformations between Node-pairs
 class GraphManager : public QObject {
@@ -62,59 +62,59 @@ class GraphManager : public QObject {
     void sendFinished();
     void setGUIInfo(QString message);
     void setGUIStatus(QString message);
-    void setPointCloud(pointcloud_type const * pc, QMatrix4x4 transformation);
+    void setPointCloud(pointcloud_type * pc, QMatrix4x4 transformation);
     void updateTransforms(QList<QMatrix4x4>* transformations);
     void setGUIInfo2(QString message);
     void setGraphEdges(QList<QPair<int, int> >* edge_list);
     void deleteLastNode();
-
-    
-    
+    void resetGLViewer();
     
     public Q_SLOTS:
     /// Start over with new graph
     void reset();
     ///iterate over all Nodes, sending their transform and pointcloud
     void sendAllClouds();
-    ///Call saveIndividualCloudsToFile, if possible as background thread
-    void saveIndividualClouds(QString file_basename);
-    ///Call saveAllCloudsToFile, if possible as background thread
-    void saveAllClouds(QString filename);
+    ///Call saveIndividualCloudsToFile, as background thread if threaded=true and possible 
+    void saveIndividualClouds(QString file_basename, bool threaded=true);
+    ///Call saveAllCloudsToFile,  as background thread if threaded=true and possible 
+    void saveAllClouds(QString filename, bool threaded=true);
     ///Throw the last node out, reoptimize
     void deleteLastFrame(); 
     void setMaxDepth(float max_depth);
+    ///Save trajectory of computed motion and ground truth (if available)
+    void saveTrajectory(QString filebasename);
+    void cloudRendered(pointcloud_type const * pc);
+    void optimizeGraph(int iter = -1);
+    void printEdgeErrors(QString);
+    void pruneEdgesWithErrorAbove(float);
+    void sanityCheck(float);
 
     public:
-    GraphManager(ros::NodeHandle, GLViewer* glviewer);
+    GraphManager(ros::NodeHandle);
     ~GraphManager();
 
-    /// Add new node to the graph.
+    //! Add new node to the graph.
     /// Node will be included, if a valid transformation to one of the former nodes
     /// can be found. If appropriate, the graph is optimized
     /// graphmanager owns newNode after this call. Do no delete the object
+    /// \callergraph
     bool addNode(Node* newNode); 
 
     ///Draw the features's motions onto the canvas
-    ///for the edge computed in the last call of hogmanEdge.
-    ///This should always be edge between the first and the last inserted nodes
     void drawFeatureFlow(cv::Mat& canvas, 
                          cv::Scalar line_color = cv::Scalar(255,0,0,0), 
                          cv::Scalar circle_color = cv::Scalar(0,0,255,0)); 
 
-    ///Flag to indicate that the graph is globally corrected after the addNode call.
-    ///However, currently optimization is done in every call anyhow
-    bool freshlyOptimized_;
-    GLViewer glviewer_;
-    ros::Time time_of_last_transform_;
-    tf::Transform  world2cam_;
-    std::map<int, Node* > graph_;
+    bool isBusy();
+    void finishUp();
     
-    void flannNeighbours();
-
     float Max_Depth;
     //void setMaxDepth(float max_depth);
+    //!Warning: This is a dangerous way to save memory. Some methods will behave undefined after this.
+    ///Notable exception: optimizeGraph()
+    void deleteFeatureInformation();
 protected:
-
+    
     ///iterate over all Nodes, transform them to the fixed frame, aggregate and save
     void saveAllCloudsToFile(QString filename);
     ///iterate over all Nodes, save each in one pcd-file
@@ -122,18 +122,20 @@ protected:
     void pointCloud2MeshFile(QString filename, pointcloud_type full_cloud);
     std::vector < cv::DMatch > last_inlier_matches_;
     std::vector < cv::DMatch > last_matches_;
-    /// The parameter max_targets determines how many potential edges are wanted
-    /// max_targets < 0: No limit
-    /// max_targets = 0: Compare to first frame only
-    /// max_targets = 1: Compare to previous frame only
-    /// max_targets > 1: Select intelligently
-    std::vector<int> getPotentialEdgeTargets(const Node* new_node, int max_targets);
+
+    /// Suggest nodes for comparison. <sequential_targets> direct predecessors in the time sequence
+    /// and <sample_targets> randomly chosen from the remaining.
+    QList<int> getPotentialEdgeTargets(const Node* new_node, int sequential_targets, int sample_targets = 5);
+
+    /// Similar to getPotentialEdgeTargets(...), but instead of looking for temporal predecessors
+    /// it looks for the nearest neighbours in the graph structure. This has the advantage that
+    /// once a loop closure is found by sampling, the edge will be used to find more closures,
+    /// where the first one was found 
+    QList<int> getPotentialEdgeTargetsWithDijkstra(const Node* new_node, int sequential_targets, int geodesic_targets, int sampled_targets = 5);
     
-    std::vector<int> getPotentialEdgeTargetsFeatures(const Node* new_node, int max_targets);
+    //std::vector<int> getPotentialEdgeTargetsFeatures(const Node* new_node, int max_targets);
     
-    void optimizeGraph();
-    void initializeHogman();
-    bool addEdgeToHogman(AIS::LoadedEdge3D edge, bool good_edge);
+    bool addEdgeToG2O(const LoadedEdge3D& edge, bool good_edge, bool set_estimate=false);
 
 
     ///Send markers to visualize the graph edges (cam transforms) in rviz (if somebody subscribed)
@@ -154,53 +156,51 @@ protected:
     void broadcastTransform(const ros::TimerEvent& event);
     ///Constructs a list of transformation matrices from all nodes (used for visualization in glviewer)
     ///The object lives on the heap and needs to be destroyed somewhere else (i.e. in glviewer)
+
+    //! Return pointer to a list of the optimizers graph poses on the heap(!)
     QList<QMatrix4x4>* getAllPosesAsMatrixList();
-    QList<QPair<int, int> >* getGraphEdges() const;
+    QList<QMatrix4x4> current_poses_;
+    //! Return pointer to a list of the optimizers graph edges on the heap(!)
+    QList<QPair<int, int> >* getGraphEdges(); 
+    QList<QPair<int, int> > current_edges_;
     void resetGraph();
 
     void mergeAllClouds(pointcloud_type & merge);
+    double geodesicDiscount(g2o::HyperDijkstra& hypdij, const MatchingResult& mr);
     
-    AIS::GraphOptimizer3D* optimizer_;
+    g2o::SparseOptimizer* optimizer_;
 
     ros::Publisher marker_pub_; 
-    //ros::Publisher transform_pub_;
     ros::Publisher ransac_marker_pub_;
-    ros::Publisher aggregate_cloud_pub_;
-    ros::Publisher sampled_cloud_pub_;
+    ros::Publisher whole_cloud_pub_;
+    ros::Publisher batch_cloud_pub_;
     
-    
+    //!Used to start the broadcasting of the pose estimate regularly
     ros::Timer timer_;
+    //!Used to broadcast the pose estimate
     tf::TransformBroadcaster br_;
-    tf::Transform kinect_transform_; ///<transformation of the last frame to the first frame (assuming the first one is fixed)
-    //Eigen::Matrix4f latest_transform_;///<same as kinect_transform_ as Eigen
-    QMatrix4x4 latest_transform_;///<same as kinect_transform_ as Eigen
+    tf::Transform computed_motion_; ///<transformation of the last frame to the first frame (assuming the first one is fixed)
+    tf::Transform  init_base_pose_;
+    tf::Transform base2points_;//base_frame -> optical_frame 
+    //Eigen::Matrix4f latest_transform_;///<same as computed_motion_ as Eigen
+    QMatrix4x4 latest_transform_;///<same as computed_motion_ as Eigen
 
 
-    // true if translation > 10cm or largest euler-angle>5 deg
-    // used to decide if the camera has moved far enough to generate a new nodes
-    bool isBigTrafo(const Eigen::Matrix4f& t);
-    bool isBigTrafo(const Transformation3& t);
-
-    /// get euler angles from 4x4 homogenous
-    void static mat2RPY(const Eigen::Matrix4f& t, double& roll, double& pitch, double& yaw);
-    /// get translation-distance from 4x4 homogenous
-    void static mat2dist(const Eigen::Matrix4f& t, double &dist);
-    void mat2components(const Eigen::Matrix4f& t, double& roll, double& pitch, double& yaw, double& dist);
-    bool overlappingViews(AISNavigation::LoadedEdge3D edge);
-
+    //!Map from node id to node. Assumption is, that ids start at 0 and are consecutive
+    std::map<int, Node* > graph_;
     bool reset_request_;
-    std::clock_t last_batch_update_;
     unsigned int marker_id;
     int last_matching_node_;
+    g2o::SE3Quat edge_to_previous_node_;
     bool batch_processing_runs_;
+    bool process_node_runs_;
+    bool someone_is_waiting_for_me_;
+    QMutex optimizer_mutex;
+    //cv::FlannBasedMatcher global_flann_matcher;
+    QList<int> keyframe_ids_;//Keyframes are added, if no previous keyframe was matched
     
 };
 
-geometry_msgs::Point pointInWorldFrame(const Eigen::Vector4f& point3d, Transformation3 transf);
-void transformAndAppendPointCloud (const pointcloud_type &cloud_in, pointcloud_type &cloud_to_append_to,
-                                   const tf::Transform transformation, float Max_Depth);
 
-bool overlappingViews(AISNavigation::LoadedEdge3D edge);
-bool triangleRayIntersection(Eigen::Vector3d triangle1,Eigen::Vector3d triangle2, 
-                             Eigen::Vector3d ray_origin, Eigen::Vector3d ray);
+
 #endif /* GRAPH_MANAGER_H_ */
