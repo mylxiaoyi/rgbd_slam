@@ -1,3 +1,5 @@
+Last Modification: 2012-01-17 
+
 PREAMBLE
 
 This release of RGBDSLAM succeeds our entry at the ROS 3D contest
@@ -21,9 +23,13 @@ RGBDSLAM has been developed and tested on Ubuntu only.
 
 
 Install openni-kinect. On ubuntu use the package manager: 
-$ sudo aptitude install ros-diamondback-openni-kinect
+$ sudo aptitude install ros-electric-openni-kinect
 
-Checkout g2o somewhere in your $ROS_PACKAGE_PATH:
+If you don't have a personal ros directory in your home directory, 
+create one (e.g. mkdir ~/ros) and add it to your ROS_PACKAGE_PATH
+(e.g. echo 'export ROS_PACKAGE_PATH=~/ros:$ROS_PACKAGE_PATH' >> ~/.bashrc )
+
+Change to your personal ros directory (cd ~/ros), then check out g2o 
 $ svn co https://code.ros.org/svn/ros-pkg/stacks/vslam/trunk/g2o
 
 To make g2o and install its system dependencies use
@@ -31,14 +37,16 @@ rosmake --rosdep-install
 If that fails to resolve the system dependencies use (on ubuntu) 
 $ sudo aptitude install libsuitesparse-dev libcsparse2.2.3 
 
-Checkout the RGBDSLAM source code somewhere in your $ROS_PACKAGE_PATH
-$ svn co https://svn.openslam.org/data/svn/rgbdslam/trunk rgbdslam
+Checkout the RGBDSLAM source code (also into the personal ros dir)
+$ svn co http://alufr-ros-pkg.googlecode.com/svn/trunk/rgbdslam_freiburg/rgbdslam
 
 Compile rgbdslam and dependencies: 
 $ rosmake --rosdep-install rgbdslam
 
+If this hangs try "roscd rgbdslam" and "make"
+
 Optionally, you might want to install perception_pcl_addons (debian package:
-ros-diamondback-perception-pcl-addons) which includes pcd_viewer, a viewer for
+ros-electric-perception-pcl-addons) which includes pcd_viewer, a viewer for
 the file format used by RGBDSLAM to store registered point clouds. If you
 want to process the point cloud you can save to a ply file and use meshlab 
 (debian-package: meshlab).
@@ -101,8 +109,9 @@ FURTHER HELP
 Here are some known issues:
 1. If you have issues compiling, make sure you removed any older version 
    of RGBDSLAM from your $ROS_PACKAGE_PATH 
-2. RGBDSLAM needs Diamondback. Make sure that neither your $PATH nor 
-   $ROS_PACKAGE_PATH contains "boxturtle", "cturtle" or "unstable".
+2. RGBDSLAM needs electric (it might work on diamondback, but we didn't test it there).
+   Make sure that neither your $PATH nor $ROS_PACKAGE_PATH contains "boxturtle", "cturtle" 
+   or "unstable".
 3. If you are located in Germany and get errors loading the saved ply files 
    into meshlab, try switching to U.S. locale or replace the decimal point with
    a comma in your .ply file
@@ -112,21 +121,20 @@ Here are some known issues:
 
 If you have questions regarding installation or usage of RGBDSLAM please refer
 to http://answers.ros.org/questions/?tags=RGBDSLAM
-For further questions, suggestions or to submit patches, please contact
-Felix Endres (endres@informatik.uni-freiburg.de)
+For further questions, suggestions, corrections of this README or to submit patches, 
+please contact Felix Endres (endres@informatik.uni-freiburg.de)
 
 Apart from this manual, detailed code documentation can be created using
 rosdoc ("rosrun rosdoc rosdoc rgbdslam"), which will create a "doc" folder
 in your current directory.
 
 
-EXPERIMENTAL FEATURES
+GICP AND SIFTGPU
 
-The following features can be activated in CMakeLists.txt, but are highly
-experimental and therefore neither guaranteed to work nor supported in case 
-they do not.
-
-  SIFTGPU:
+If there are problems related to the compilation or linking of GICP or SIFTGPU,
+you can deactivate these features at the top of CMakeLists.txt. You might get
+even faster GPU features setting SIFT_GPU_MODE to 1 (CUDA) but you will need to
+install proprietary drivers:
   SiftGPU uses (in our case) CUDA, which needs a new NVidia GPU (see
   http://www.nvidia.com/object/cuda_gpus.html).  For installing the development
   drivers and the CUDA SDK you can use the following tutorial:
@@ -139,7 +147,7 @@ they do not.
   external/siftgpu/linux/makefile.
 
   GICP
-  Generalized ICP can be activated for refining the registration. For more
+  Generalized ICP can be (de)activated for refining the registration. For more
   information see http://stanford.edu/~avsegal/generalized_icp.html
 
 
