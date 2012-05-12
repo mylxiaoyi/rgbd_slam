@@ -84,10 +84,14 @@ public:
   MatchingResult matchNodePair(const Node* older_node);
   //MatchingResult matchNodePair2(const Node* older_node);
 
+  ///Transform, e.g., from Joint/Wheel odometry
+  void setOdomTransform(tf::StampedTransform odom);
   ///Transform, e.g., from MoCap
   void setGroundTruthTransform(tf::StampedTransform gt);
   ///Transform, e.g., from kinematics
-  void setBase2PointsTransform(tf::StampedTransform b2p);
+  void setBase2PointsTransform(tf::StampedTransform& b2p);
+  ///Transform, e.g., from Joint/Wheel odometry
+  tf::StampedTransform getOdomTransform();
   ///Transform, e.g., from MoCap
   tf::StampedTransform getGroundTruthTransform();
   ///Transform, e.g., from kinematics
@@ -114,7 +118,7 @@ public:
 	void buildFlannIndex();
   //!Fills "matches" and returns ratio of "good" features 
   //!in the sense of distinction via the "nn_distance_ratio" setting (see parameter server)
-	unsigned int findPairsFlann(const Node* other, std::vector<cv::DMatch>* matches) const;
+	unsigned int featureMatching(const Node* other, std::vector<cv::DMatch>* matches) const;
 
 #ifdef USE_ICP_CODE
 	bool getRelativeTransformationTo_ICP_code(const Node* target_node,
@@ -169,6 +173,7 @@ protected:
 	cv::flann::Index* flannIndex;
   tf::StampedTransform base2points_; //!<contains the transformation from the base (defined on param server) to the point_cloud
   tf::StampedTransform ground_truth_transform_;//!<contains the transformation from the mocap system
+  tf::StampedTransform odom_transform_;        //!<contains the transformation from the wheel encoders/joint states
   int initial_node_matches_;
   //void computeKeypointDepthStats(const cv::Mat& depth_img, const std::vector<cv::KeyPoint> keypoints);
 
@@ -196,13 +201,15 @@ protected:
                    const sensor_msgs::CameraInfoConstPtr& cam_info);
 
 	// helper for ransac
+	template<class CONTAINER>
+	Eigen::Matrix4f getTransformFromMatchesUmeyama(const Node* other_node, CONTAINER matches) const;
+	// helper for ransac
 	// check for distances only if max_dist_cm > 0
-	template<class InputIterator>
+	template<class CONTAINER>
 	Eigen::Matrix4f getTransformFromMatches(const Node* other_node, 
-                                            InputIterator iter_begin,
-                                            InputIterator iter_end,
-                                            bool& valid, 
-                                            float max_dist_m = -1) const;
+                                          const CONTAINER & matches,
+                                          bool& valid, 
+                                          float max_dist_m = -1) const;
 	//std::vector<cv::DMatch> const* matches,
 	//pcl::TransformationFromCorrespondences& tfc);
 
@@ -215,15 +222,16 @@ protected:
   ///Retrieves and stores the transformation from base to point cloud at capturing time 
   void retrieveBase2CamTransformation();
 	// helper for ransac
-	void computeInliersAndError(const std::vector<cv::DMatch>& initial_matches,
-                                const Eigen::Matrix4f& transformation,
-                                const std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> >& origins,
-                                const std::vector<std::pair<float, float> > origins_depth_stats,
-                                const std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> >& targets,
-                                const std::vector<std::pair<float, float> > targets_depth_stats,
-                                std::vector<cv::DMatch>& new_inliers, //output var
-                                double& mean_error, std::vector<double>& errors,
-                                double squaredMaxInlierDistInM = 0.0009) const; //output var;
+  template<class CONTAINER>
+	void computeInliersAndError(const CONTAINER & initial_matches,
+                              const Eigen::Matrix4f& transformation,
+                              const std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> >& origins,
+                              const std::vector<std::pair<float, float> > origins_depth_stats,
+                              const std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> >& targets,
+                              const std::vector<std::pair<float, float> > targets_depth_stats,
+                              std::vector<cv::DMatch>& new_inliers, //output var
+                              double& mean_error, std::vector<double>& errors,
+                              double squaredMaxInlierDistInM = 0.0009) const; //output var;
 
 public:
 	EIGEN_MAKE_ALIGNED_OPERATOR_NEW

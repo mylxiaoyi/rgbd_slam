@@ -23,8 +23,9 @@ include($ENV{ROS_ROOT}/core/rosbuild/rosbuild.cmake)
 #  Release        : w/o debug symbols, w/ optimization
 #  RelWithDebInfo : w/ debug symbols, w/ optimization
 #  MinSizeRel     : w/o debug symbols, w/ optimization, stripped binaries
-set(ROS_BUILD_TYPE RelWithDebInfo)
-
+set(ROS_BUILD_TYPE Release)
+set(CMAKE_CXX_FLAGS "-O3")
+add_definitions(-DROSCONSOLE_SEVERITY_INFO)
 #is used for compiling the libraries 
 set(USE_GICP 0)
 IF (${USE_GICP_BIN} OR ${USE_GICP_CODE})
@@ -99,7 +100,7 @@ IF (${USE_SIFT_GPU})
 		MESSAGE(FATAL_ERROR "SiftGPU cannot be compiled. Returned: ${sift_gpu_return}")
 	ENDIF (NOT ${sift_gpu_return} EQUAL 0)
 	
-	FILE(COPY external/siftgpu/linux/bin/libsiftgpu.so DESTINATION ../lib)
+	FILE(COPY external/siftgpu/linux/bin/libsiftgpu.so DESTINATION ../lib/)
 	
 	add_definitions(-DUSE_SIFT_GPU)
 	add_definitions(-DSIFT_GPU_MODE=$ENV{SIFT_GPU_MODE})
@@ -112,6 +113,7 @@ ENDIF (${USE_SIFT_GPU})
 #############################
 IF (${USE_GICP})
 	SET(gicp_build_path ${CMAKE_SOURCE_DIR}/external/gicp/ann_1.1.2)
+  FILE(MAKE_DIRECTORY ${gicp_build_path}/lib/)
   MESSAGE("\n------------------------------------------------------------------\n")
 	MESSAGE("Compiling GICP...")
 	EXECUTE_PROCESS(
@@ -126,7 +128,7 @@ IF (${USE_GICP})
 		MESSAGE(FATAL_ERROR "GICP cannot be compiled. Returned: ${gicp_return}")
 	ENDIF (NOT ${gicp_return} EQUAL 0)
 	
-	FILE(COPY ${gicp_build_path}/lib/libANN.a DESTINATION ${CMAKE_SOURCE_DIR}/lib)
+	FILE(COPY ${gicp_build_path}/lib/libANN.a DESTINATION ${CMAKE_SOURCE_DIR}/lib/)
 ENDIF (${USE_GICP})
 
 IF (${USE_GICP_BIN})
@@ -174,7 +176,7 @@ file(GLOB_RECURSE QT_SOURCES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} FOLLOW_SYMLINK
 rosbuild_add_executable(rgbdslam ${QT_SOURCES} ${QT_RESOURCES_CPP} ${QT_FORMS_HPP} ${QT_MOC_HPP})
 
 #set libs
-SET(G2O_LIBS cholmod g2o_core g2o_stuff g2o_types_slam3d g2o_solver_cholmod g2o_solver_pcg g2o_solver_csparse g2o_incremental)
+SET(G2O_LIBS cholmod g2o_core g2o_stuff g2o_types_slam3d g2o_solver_cholmod g2o_solver_pcg g2o_solver_csparse cxsparse g2o_incremental)
 SET(LIBS_LINK GL GLU -lgl2ps ${G2O_LIBS} ${QT_LIBRARIES} ${QT_QTOPENGL_LIBRARY} ${GLUT_LIBRARY} ${OPENGL_LIBRARY} ${OpenCV_LIBS})
 
 IF (${USE_SIFT_GPU})

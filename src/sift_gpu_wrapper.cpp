@@ -47,16 +47,17 @@ SiftGPUWrapper::SiftGPUWrapper() {
     char max_flag[] = {"-tc2"};
     //char resize_storage_on_demand[] = {"-tight"};
     //char unnormalized_descriptors[] = {"-unn"};
-    //char verbosity[] = {"-v0"};//nothing but errors
+    char verbosity[] = {"-v"};//nothing but errors
+    char verbosity_val[] = {"0"};//nothing but errors
     //char * argv[] = {method, "-t", "10", subpixelKey, subpixelValue, max_flag, max_feat_char};
     char first_octave[] = {"-fo"};
     char first_octave_val[] = {"-1"};
     char * argv[] = {method,  subpixelKey, subpixelValue, \
                      max_flag, max_feat_char, first_octave,  \
-                     first_octave_val}; /*, resize_storage_on_demand};
+                     first_octave_val, verbosity, verbosity_val}; /*, resize_storage_on_demand};
                      unnormalized_descriptors, \
                      "-e", "50.0" };//, "-t", "0.005"};*/
-    siftgpu->ParseParam(7, argv);
+    siftgpu->ParseParam(9, argv);
 
     if (siftgpu->CreateContextGL() != SiftGPU::SIFTGPU_FULL_SUPPORTED) {
         ROS_ERROR("Can't create OpenGL context! SiftGPU cannot be used.");
@@ -120,13 +121,9 @@ void SiftGPUWrapper::detect(const cv::Mat& image, cv::vector<cv::KeyPoint>& keyp
     //copy to opencv structure
     keypoints.clear();
     for (int i = 0; i < num_features; ++i) {
-        KeyPoint key(keys[i].x, keys[i].y, keys[i].s, keys[i].o);
+        KeyPoint key(keys[i].x, keys[i].y, 6.0 * keys[i].s, keys[i].o); // 6 x scale is the conversion to pixels, according to changchang wu (the author of siftgpu)
         keypoints.push_back(key);
     }
-
-    //	FILE *fp = fopen("bla.pgm", "w");
-    //	WritePGM(fp, data, image.cols, image.rows);
-    //	fclose(fp);
     gpu_mutex.unlock();
 
 }

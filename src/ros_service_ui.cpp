@@ -39,6 +39,11 @@ void RosUi::quickSaveAll() {
     ROS_INFO("Saving Whole Model to %s", qPrintable(filename));
 }
 
+void RosUi::saveFeatures() {
+    Q_EMIT saveAllFeatures(QString("feature_database.yml"));
+    ROS_INFO("Saving Whole Model to %s", qPrintable(filename));
+}
+
 void RosUi::saveAll() {
     Q_EMIT saveAllClouds(filename);
     ROS_INFO("Saving Whole Model to %s", qPrintable(filename));
@@ -114,7 +119,8 @@ bool RosUi::services(rgbdslam::rgbdslam_ros_ui::Request  &req,
 {
     if     (req.comand == "reset"          ){ resetCmd(); }
     else if(req.comand == "quick_save"     ){ quickSaveAll(); }
-    else if(req.comand == "save_all"       ){ saveAll(); }
+    else if(req.comand == "save_cloud"     ){ saveAll(); }
+    else if(req.comand == "save_features"  ){ saveFeatures(); }
     else if(req.comand == "save_trajectory"){ Q_EMIT saveTrajectory("trajectory"); }
     else if(req.comand == "save_individual"){ saveIndividual(); }
     else if(req.comand == "send_all"       ){ sendAll(); }
@@ -133,6 +139,8 @@ bool RosUi::services_b(rgbdslam::rgbdslam_ros_ui_b::Request  &req,
 {
     if     (req.comand == "pause" ){ pause(req.value); }
     else if(req.comand == "record"){ bagRecording(req.value); }
+    else if(req.comand == "mapping"){ Q_EMIT toggleMapping(req.value); }
+    else if(req.comand == "store_pointclouds"){ toggleCloudStorage(req.value); }
     else{
         ROS_ERROR("Valid commands are: {pause, record}");
         return false;
@@ -153,3 +161,8 @@ bool RosUi::services_f(rgbdslam::rgbdslam_ros_ui_f::Request  &req,
     }
 }
 
+void RosUi::toggleCloudStorage(bool storage) {
+  ParameterServer::instance()->set("store_pointclouds", storage);
+  ROS_INFO_COND(storage, "Point clouds will be stored");
+  ROS_INFO_COND(!storage, "Point clouds will not be stored");
+}
