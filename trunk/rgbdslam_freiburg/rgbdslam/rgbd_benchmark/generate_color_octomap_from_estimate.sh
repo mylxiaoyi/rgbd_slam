@@ -10,13 +10,13 @@ DIR=`readlink -f $1`
 FILE=`readlink -f $2`
 pushd $DIR > /dev/null
 
-if rosrun rgbd_benchmark_tools generate_registered_pointcloud.py --pcd_format rgb.txt depth.txt $FILE --downsample 5 --nth 10 registered_cloud; then
-  export ROS_MASTER_URI=http://localhost:11312
-  roscore -p11312 &
+if rosrun rgbd_benchmark_tools generate_registered_pointcloud.py --pcd_format rgb.txt depth.txt $FILE --downsample 1 --nth 1 registered_cloud; then
+  export ROS_MASTER_URI=http://localhost:11314
+  roscore -p11314 &
   sleep 3
   rosparam set /color_octomap_server1/data_directory $DIR
   roslaunch octomap_server color_octomap_mapping_from_pcd.launch  
-  octovis $DIR/color_server_map*.cot
+  #octovis $DIR/color_server_map*.cot
   kill -TERM $! #Kill Roscore
 fi
 

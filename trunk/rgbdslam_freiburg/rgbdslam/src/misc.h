@@ -18,15 +18,31 @@
 #include <QMatrix4x4>
 
 void printTransform(const char* name, const tf::Transform t) ;
-
+///Write Transformation to textstream
+void logTransform(QTextStream& out, const tf::Transform& t, double timestamp, const char* label = NULL);
 void printQMatrix4x4(const char* name, const QMatrix4x4& m);
 
-QMatrix4x4 g2o2QMatrix(const g2o::SE3Quat se3) ;
+///Conversion Function
+QMatrix4x4    g2o2QMatrix(const g2o::SE3Quat se3) ;
+///Conversion Function
+tf::Transform g2o2TF(     const g2o::SE3Quat se3) ;
+///Conversion Function
+g2o::SE3Quat  eigen2G2O(  const Eigen::Matrix4d& eigen_mat);
+///Conversion Function
+g2o::SE3Quat  tf2G2O(     const tf::Transform t);
 
-tf::Transform g2o2TF(const g2o::SE3Quat se3) ;
+/// get euler angles and translation from 4x4 homogenous
+void mat2components(const Eigen::Matrix4f& t, double& roll, double& pitch, double& yaw, double& dist);
+/// get euler angles from 4x4 homogenous
+void mat2RPY(const Eigen::Matrix4f& t, double& roll, double& pitch, double& yaw);
+/// get translation-distance from 4x4 homogenous
+void mat2dist(const Eigen::Matrix4f& t, double &dist);
 
-void logTransform(QTextStream& out, const tf::Transform& t, double timestamp, const char* label = NULL);
 
+///Creates a pointcloud from rgb8 or mono8 coded images + float depth
+pointcloud_type* createXYZRGBPointCloud (const sensor_msgs::ImageConstPtr& depth_msg, const sensor_msgs::ImageConstPtr& rgb_msg, const sensor_msgs::CameraInfoConstPtr& cam_info); 
+
+///Helper function to aggregate pointclouds in a single coordinate frame
 void transformAndAppendPointCloud (const pointcloud_type &cloud_in, pointcloud_type &cloud_to_append_to,
                                    const tf::Transform transformation, float Max_Depth);
 
@@ -37,17 +53,10 @@ geometry_msgs::Point pointInWorldFrame(const Eigen::Vector4f& point3d, g2o::SE3Q
 bool isBigTrafo(const Eigen::Matrix4f& t);
 bool isBigTrafo(const g2o::SE3Quat& t);
 
-/// get euler angles from 4x4 homogenous
-void mat2RPY(const Eigen::Matrix4f& t, double& roll, double& pitch, double& yaw);
-/// get translation-distance from 4x4 homogenous
-void mat2dist(const Eigen::Matrix4f& t, double &dist);
 
 //bool overlappingViews(LoadedEdge3D edge);
 //bool triangleRayIntersection(Eigen::Vector3d triangle1,Eigen::Vector3d triangle2, Eigen::Vector3d ray_origin, Eigen::Vector3d ray);
 
-g2o::SE3Quat eigen2G2O(const Eigen::Matrix4d& eigen_mat);
-g2o::SE3Quat tf2G2O(const tf::Transform t);
-void mat2components(const Eigen::Matrix4f& t, double& roll, double& pitch, double& yaw, double& dist);
 
 /// Creates Feature Detector Objects accordingt to the type.
 /// Possible detectorTypes: FAST, STAR, SIFT, SURF, GFTT
@@ -67,7 +76,14 @@ void printMatrixInfo(cv::Mat& image, std::string name = std::string(""));
 //!Return true if frames should be dropped because they are asynchronous
 bool asyncFrameDrop(ros::Time depth, ros::Time rgb);
 
-//!Creates a pointcloud from rgb8 or mono8 coded images + float depth
-pointcloud_type* createXYZRGBPointCloud (const sensor_msgs::ImageConstPtr& depth_msg, const sensor_msgs::ImageConstPtr& rgb_msg, const sensor_msgs::CameraInfoConstPtr& cam_info); 
+double errorFunction(const Eigen::Vector4f& x1, const double x1_depth_cov, 
+                      const Eigen::Vector4f& x2, const double x2_depth_cov, 
+                      const Eigen::Matrix4f& tf_1_to_2);
+
+double errorFunction2(const Eigen::Vector4f& x1, 
+                      const Eigen::Vector4f& x2, 
+                      const Eigen::Matrix4f& tf_1_to_2);
+
+float getMinDepthInNeighborhood(const cv::Mat& depth, cv::Point2f center, float diameter);
 
 #endif

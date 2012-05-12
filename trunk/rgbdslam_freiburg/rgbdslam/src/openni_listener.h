@@ -192,6 +192,7 @@ class OpenNIListener : public QObject {
     tf::TransformBroadcaster tf_br_;
     ros::Publisher tf_pub_;
     int data_id_;
+    std::string image_encoding_;
 };
 
 #endif

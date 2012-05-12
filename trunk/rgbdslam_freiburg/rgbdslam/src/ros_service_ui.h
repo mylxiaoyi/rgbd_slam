@@ -46,6 +46,8 @@ Q_SIGNALS:
     void reset(); 
     ///User selected to start or resume processing
     void togglePause();
+    ///User selected to do SLAM or Localization only
+    void toggleMapping(bool);
     ///User selected to start or resume bag recording
     void toggleBagRecording();
     ///User wants the next frame to be processed
@@ -55,6 +57,8 @@ Q_SIGNALS:
     void sendAllClouds(); ///< Signifies the sending of the whole model
     ///User wants the current world model to be saved to a pcd-file or ply file
     void saveAllClouds(QString filename);
+    ///User wants the feature locations and descriptions saved to yaml or xml file
+    void saveAllFeatures(QString filename);
     ///User wants the current world model to be saved to one pcd-file per node
     void saveIndividualClouds(QString file_basename);
     void setMaxDepth(float max_depth);
@@ -70,10 +74,12 @@ private:
     void sendAll();
     void setMax(float val);
     void saveAll();
+    void saveFeatures();
     void saveIndividual();
     void quickSaveAll();
     void pause(bool);
     void bagRecording(bool);
+    void toggleCloudStorage(bool);
     void getOneFrameCmd();
     void deleteLastFrameCmd();
 private:

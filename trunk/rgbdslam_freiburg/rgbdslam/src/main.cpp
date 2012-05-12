@@ -38,9 +38,11 @@ void ui_connections(QObject* ui, GraphManager* graph_mgr, OpenNIListener* listen
     QObject::connect(ui, SIGNAL(deleteLastFrame()), graph_mgr, SLOT(deleteLastFrame()));
     QObject::connect(ui, SIGNAL(sendAllClouds()), graph_mgr, SLOT(sendAllClouds()));
     QObject::connect(ui, SIGNAL(saveAllClouds(QString)), graph_mgr, SLOT(saveAllClouds(QString)));
+    QObject::connect(ui, SIGNAL(saveAllFeatures(QString)), graph_mgr, SLOT(saveAllFeatures(QString)));
     QObject::connect(ui, SIGNAL(saveIndividualClouds(QString)), graph_mgr, SLOT(saveIndividualClouds(QString)));
     QObject::connect(ui, SIGNAL(setMaxDepth(float)), graph_mgr, SLOT(setMaxDepth(float)));
     QObject::connect(ui, SIGNAL(saveTrajectory(QString)), graph_mgr, SLOT(saveTrajectory(QString)));
+    QObject::connect(ui, SIGNAL(toggleMapping(bool)), graph_mgr, SLOT(toggleMapping(bool)));
 }
 
 ///Connect Signals and Slots only relevant for the graphical interface

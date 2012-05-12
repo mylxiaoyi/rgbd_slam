@@ -167,6 +167,14 @@ void Graphical_UI::quickSaveAll() {
     statusBar()->showMessage(message);
     //infoLabel->setText(message);
 }
+
+void Graphical_UI::saveFeatures() {
+    filename = QFileDialog::getSaveFileName(this, "Save Features to File", filename, tr("YAML (*.yml);;XML (*.xml)"));
+    Q_EMIT saveAllFeatures(filename);
+    QString message = tr("Saving Features");
+    statusBar()->showMessage(message);
+}
+
 void Graphical_UI::saveAll() {
     filename = QFileDialog::getSaveFileName(this, "Save Point CLoud to File", filename, tr("PCD (*.pcd);;PLY (*ply)"));
     Q_EMIT saveAllClouds(filename);
@@ -274,6 +282,11 @@ void Graphical_UI::deleteLastFrameCmd() {
     statusBar()->showMessage(message);
     //infoLabel->setText(message);
 }
+
+void Graphical_UI::toggleMappingPriv(bool mapping_on) {
+    Q_EMIT toggleMapping(mapping_on);
+}
+
 void Graphical_UI::bagRecording(bool pause_on) {
     Q_EMIT toggleBagRecording();
     if(pause_on) {
@@ -286,6 +299,10 @@ void Graphical_UI::bagRecording(bool pause_on) {
         //infoLabel->setText(message);
     }
 }
+void Graphical_UI::toggleCloudStorage(bool storage) {
+  ParameterServer::instance()->set("store_pointclouds", storage);
+}
+
 void Graphical_UI::pause(bool pause_on) {
     Q_EMIT togglePause();
     if(pause_on) {
@@ -345,6 +362,13 @@ void Graphical_UI::createMenus() {
     graphMenu->addAction(quickSaveAct);
     this->addAction(quickSaveAct);
 
+    QAction *saveFeaturesAct = new QAction(tr("Save &Features"), this);
+    saveFeaturesAct->setShortcut(QString("Ctrl+F"));
+    saveFeaturesAct->setStatusTip(tr("Save all feature positions and descriptions in a common coordinate frame to a yaml or xml file"));
+    saveFeaturesAct->setIcon(QIcon::fromTheme("document-save"));//doesn't work for gnome
+    connect(saveFeaturesAct, SIGNAL(triggered()), this, SLOT(saveFeatures()));
+    graphMenu->addAction(saveFeaturesAct);
+    this->addAction(saveFeaturesAct);
 
     QAction *saveAct = new QAction(tr("&Save as..."), this);
     saveAct->setShortcuts(QKeySequence::SaveAs);
@@ -369,6 +393,27 @@ void Graphical_UI::createMenus() {
     connect(sendAct, SIGNAL(triggered()), this, SLOT(sendAll()));
     graphMenu->addAction(sendAct);
     this->addAction(sendAct);
+
+    graphMenu->addSeparator();
+
+    QAction *toggleMappingAct = new QAction(tr("Toggle &Mapping"), this);
+    toggleMappingAct->setShortcut(QString("M"));
+    toggleMappingAct->setCheckable(true);
+    toggleMappingAct->setChecked(true);
+    toggleMappingAct->setStatusTip(tr("Toggle between SLAM and Localization"));
+    toggleMappingAct->setIcon(QIcon::fromTheme("media-playback-start"));//doesn't work for gnome
+    connect(toggleMappingAct, SIGNAL(toggled(bool)), this, SLOT(toggleMappingPriv(bool)));
+    graphMenu->addAction(toggleMappingAct);
+    this->addAction(toggleMappingAct);
+
+    graphMenu->addSeparator();
+
+    QAction *optimizeAct = new QAction(tr("Optimize Trajectory &Estimate"), this);
+    optimizeAct->setShortcut(QString("O"));
+    optimizeAct->setStatusTip(tr("Compute optimized pose graph with g2o"));
+    connect(optimizeAct, SIGNAL(triggered()), this, SLOT(optimizeGraphTrig()));
+    graphMenu->addAction(optimizeAct);
+    this->addAction(optimizeAct);
 
     graphMenu->addSeparator();
 
@@ -435,12 +480,6 @@ void Graphical_UI::createMenus() {
     actionMenu->addAction(compareAct);
     this->addAction(compareAct);
 
-    QAction *optimizeAct = new QAction(tr("Optimize Trajectory &Estimate"), this);
-    optimizeAct->setShortcut(QString("O"));
-    optimizeAct->setStatusTip(tr("Compute optimized pose graph with g2o"));
-    connect(optimizeAct, SIGNAL(triggered()), this, SLOT(optimizeGraphTrig()));
-    actionMenu->addAction(optimizeAct);
-    this->addAction(optimizeAct);
 
     /*
     QAction *showErrorAct = new QAction(tr("Show Edge Errors"), this);
@@ -473,7 +512,20 @@ void Graphical_UI::createMenus() {
     actionMenu->addAction(psOutputAct);
     this->addAction(psOutputAct);
 
-    //View Menu
+    QAction *toggleCloudStorageAct = new QAction(tr("&Store Point Clouds"), this);
+    QList<QKeySequence> tcs_shortcuts;
+    tcs_shortcuts.append(QString("Ctrl+P"));
+    toggleCloudStorageAct->setShortcuts(tcs_shortcuts);
+    toggleCloudStorageAct->setCheckable(true);
+    toggleCloudStorageAct->setChecked(ParameterServer::instance()->get<bool>("store_pointclouds"));
+    toggleCloudStorageAct->setStatusTip(tr("Toggle storing of point clouds (for later sending, map creation)"));
+    toggleCloudStorageAct->setIcon(QIcon::fromTheme("server-database"));//doesn't work for gnome
+    connect(toggleCloudStorageAct, SIGNAL(toggled(bool)), this, SLOT(toggleCloudStorage(bool)));
+    actionMenu->addAction(toggleCloudStorageAct);
+    this->addAction(toggleCloudStorageAct);
+
+
+    //View Menu ###############################################################
     viewMenu = menuBar()->addMenu(tr("&View"));
 
 
@@ -517,7 +569,7 @@ void Graphical_UI::createMenus() {
       this->addAction(toggleTriangulationAct);
 
       QAction *toggleFollowAct = new QAction(tr("Follow &Camera"), this);
-      toggleFollowAct->setShortcut(QString("Ctrl+F"));
+      toggleFollowAct->setShortcut(QString("Shift+F"));
       toggleFollowAct->setCheckable(true);
       toggleFollowAct->setChecked(true);
       toggleFollowAct->setStatusTip(tr("Always use viewpoint of last frame (except zoom)"));

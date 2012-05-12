@@ -50,8 +50,26 @@ public:
      * \return the parameter value
      */
     template<typename T>
+    void set(const std::string param, T value) {
+        if(config.count(param)==0){
+          ROS_ERROR("ParameterServer: Ignoring invalid parameter: \"%s\"", param.c_str());
+          return;
+        }
+        try{
+          boost::any_cast<T>(value); //fails if wrong param type
+        } catch (boost::bad_any_cast e) {
+          ROS_ERROR("ParameterServer: Ignoring invalid parameter type: %s", e.what());
+          return;
+        }
+        config[param] = value;
+    }
+
+    template<typename T>
     T get(const std::string param) {
-        ROS_ERROR_COND(config.count(param)==0, "ParameterServer object queried for invalid parameter \"%s\"", param.c_str());
+        if(config.count(param)==0){
+          ROS_FATAL("ParameterServer object queried for invalid parameter \"%s\"", param.c_str());
+          assert(config.count(param)==0);
+        }
         boost::any value = config[param];
         return boost::any_cast<T>(value);
     }

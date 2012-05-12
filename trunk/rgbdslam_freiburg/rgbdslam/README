@@ -1,6 +1,6 @@
-Last Modification: 2012-01-17 
+Last Modification: 2012-01-18 
 
-PREAMBLE
+PREAMBLE #######################################################################
 
 This release of RGBDSLAM succeeds our entry at the ROS 3D contest
 (see http://www.ros.org/wiki/openni/Contests/ROS%203D). 
@@ -9,12 +9,13 @@ There have been many changes, mainly
 - Performance improvments w.r.t accuracy and robustness of registration
 - Performance improvments w.r.t computation time
 - A more convenient user interface with internal visualization
-- Convenience features, e.g., saving to pcd/ply file, node deletion and many more
+- Convenience features like saving to pcd/ply file, node deletion and many more
 - Use of g2o as SLAM Backend (formerly hogman)
 - The ability to run without graphics card/X-Server
 
 
-INSTALLATION
+
+INSTALLATION ###################################################################
 
 The following instructions assume you have ROS Diamondback installed in the
 Desktop-Full configuration.  Otherwise please refer to
@@ -52,7 +53,8 @@ want to process the point cloud you can save to a ply file and use meshlab
 (debian-package: meshlab).
 
 
-USAGE with GUI
+
+USAGE with GUI #################################################################
 
 To start RGBDSLAM launch
   roslaunch rgbdslam kinect+rgbdslam.launch
@@ -67,32 +69,41 @@ frames from (almost) the same position are not included in the final model.
 The 3D visualization always shows the globally optimized model. Neighbouring
 points are triangulated except at missing values and depth jumps.
 
-USAGE without GUI
 
-The RosUI is an alternative to the Grapical_UI to run the rgbdslam headless, for example on the PR2.
-rgbdslam can then be used via service-calls.
+
+USAGE without GUI ##############################################################
+
+The RosUI is an alternative to the Grapical_UI to run the rgbdslam headless,
+for example on the PR2.  rgbdslam can then be used via service-calls.
 The possible calls are:
-- /rgbdslam/ros_ui {reset, quick_save, save_all, save_individual, save_trajectory, send_all, delete_frame}
+- /rgbdslam/ros_ui {reset, quick_save, save_cloud, save_features, save_individual, save_trajectory, send_all, delete_frame}
 - /rgbdslam/ros_ui_b {pause, record} {true, false}
 - /rgbdslam/ros_ui_f {set_max} {float}
 
-To start the rgbdslam headless use the rgbdslam_headless.launch:
-	roslaunch rgbdslam rgbdslam_headless.launch
-capture single frames via:
+To start the rgbdslam headless use the headless.launch:
+	roslaunch rgbdslam headless.launch
+
+Capture single frames via:
 	rosservice call /rgbdslam/ros_ui frame
-capture a stream of data:
+
+Capture a stream of data:
 	rosservice call /rgbdslam/ros_ui_b pause false
-send point clouds with computed transformations (e.g., to rviz or octomap_server):
+
+Send point clouds with computed transformations (e.g., to rviz or octomap_server):
 	rosservice call /rgbdslam/ros_ui send_all
-save the date using one of the following:
-all pointclouds in one file quicksave.pcd in rgbdslam/bin-directory:
-	rosservice call /rgbdslam/ros_ui save_all
-every pointcloud in its own file in rgbdslam/bin-directory:
+
+Save data using one of the following:
+
+All pointclouds in one file quicksave.pcd in rgbdslam/bin-directory:
+	rosservice call /rgbdslam/ros_ui save_cloud
+
+Every pointcloud in its own file in rgbdslam/bin-directory:
 	rosservice call /rgbdslam/ros_ui save_individual
 
 /rgbdslam/ros_ui:
 	-reset	resets the graph, delets all nodes (refreshes only when capturing new images)
-	-quick_save, save_all	saves all pointclouds in one file quicksave.pcd in rgbdslam/bin-directory
+	-quick_save, save_cloud	saves all pointclouds in one file quicksave.pcd in rgbdslam/bin-directory
+  -save_features saves the feature locations and descriptors in a yaml file "feature_database.yml"
 	-save_individual	saves every scan in its own file in rgbdslam/bin-directory
 	-send_all	sends all pointclouds to /rgbdslam/transformed_cloud (can be visualized with rviz)
 	-delete_frame	delete the last frame from the graph (refreshes only when capturing new images)
@@ -104,7 +115,9 @@ every pointcloud in its own file in rgbdslam/bin-directory:
 /rgbdslam/ros_ui_f:
 	-set_max	filters out all datapoints further away than this value (in cm, only for saving to files)
 
-FURTHER HELP 
+
+
+FURTHER HELP  ##################################################################
 
 Here are some known issues:
 1. If you have issues compiling, make sure you removed any older version 
@@ -129,7 +142,8 @@ rosdoc ("rosrun rosdoc rosdoc rgbdslam"), which will create a "doc" folder
 in your current directory.
 
 
-GICP AND SIFTGPU
+
+GICP AND SIFTGPU ###############################################################
 
 If there are problems related to the compilation or linking of GICP or SIFTGPU,
 you can deactivate these features at the top of CMakeLists.txt. You might get
@@ -151,7 +165,8 @@ install proprietary drivers:
   information see http://stanford.edu/~avsegal/generalized_icp.html
 
 
-LICENSE INFORMATION
+
+LICENSE INFORMATION ############################################################
 
 This software is distributed in the hope that it will be useful, but WITHOUT
 ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS

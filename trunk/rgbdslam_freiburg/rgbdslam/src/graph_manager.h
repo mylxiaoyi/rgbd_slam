@@ -38,6 +38,7 @@
 #include <QString>
 #include <QMatrix4x4>
 #include <QList>
+#include <QMap>
 #include <QMutex>
 
 #include <iostream>
@@ -52,6 +53,15 @@
 #include "g2o/core/hyper_dijkstra.h"
 
 //#define ROSCONSOLE_SEVERITY_INFO
+/*
+class GraphNode {
+  GraphNode() : backend_node(NULL), frontend_node(NULL), index(-1) {}
+
+  g2o::VertexSE3* backend_node;
+  Node* frontend_node;
+  int index;
+}
+*/
 
 //!Computes a globally optimal trajectory from transformations between Node-pairs
 class GraphManager : public QObject {
@@ -73,21 +83,25 @@ class GraphManager : public QObject {
     /// Start over with new graph
     void reset();
     ///iterate over all Nodes, sending their transform and pointcloud
-    void sendAllClouds();
+    void sendAllClouds(bool threaded_if_available=true);
     ///Call saveIndividualCloudsToFile, as background thread if threaded=true and possible 
     void saveIndividualClouds(QString file_basename, bool threaded=true);
     ///Call saveAllCloudsToFile,  as background thread if threaded=true and possible 
     void saveAllClouds(QString filename, bool threaded=true);
+    ///Call saveAllFeaturesToFile,  as background thread if threaded=true and possible 
+    void saveAllFeatures(QString filename, bool threaded = true);
     ///Throw the last node out, reoptimize
     void deleteLastFrame(); 
     void setMaxDepth(float max_depth);
     ///Save trajectory of computed motion and ground truth (if available)
-    void saveTrajectory(QString filebasename);
+    void saveTrajectory(QString filebasename, bool with_ground_truth = false);
     void cloudRendered(pointcloud_type const * pc);
-    void optimizeGraph(int iter = -1);
+    ///Calls optimizeGraphImpl either in fore- or background depending on parameter concurrent_optimization
+    void optimizeGraph(int iter = -1, bool nonthreaded=false);
     void printEdgeErrors(QString);
     void pruneEdgesWithErrorAbove(float);
     void sanityCheck(float);
+    void toggleMapping(bool);
 
     public:
     GraphManager(ros::NodeHandle);
@@ -99,6 +113,9 @@ class GraphManager : public QObject {
     /// graphmanager owns newNode after this call. Do no delete the object
     /// \callergraph
     bool addNode(Node* newNode); 
+
+    /// Adds the first node
+    void firstNode(Node* new_node);
 
     ///Draw the features's motions onto the canvas
     void drawFeatureFlow(cv::Mat& canvas, 
@@ -114,9 +131,15 @@ class GraphManager : public QObject {
     ///Notable exception: optimizeGraph()
     void deleteFeatureInformation();
 protected:
-    
+    void sendAllCloudsImpl();
+    ///Computes optimization 
+    void optimizeGraphImpl(int max_iter);
+    ///Instanciate the optimizer with the desired backend
+    void createOptimizer(std::string backend, g2o::SparseOptimizer* optimizer = NULL);
     ///iterate over all Nodes, transform them to the fixed frame, aggregate and save
     void saveAllCloudsToFile(QString filename);
+    ///Transform all feature positions to global coordinates and save them together with the belonging descriptors
+    void saveAllFeaturesToFile(QString filename);
     ///iterate over all Nodes, save each in one pcd-file
     void saveIndividualCloudsToFile(QString filename);
     void pointCloud2MeshFile(QString filename, pointcloud_type full_cloud);
@@ -131,7 +154,7 @@ protected:
     /// it looks for the nearest neighbours in the graph structure. This has the advantage that
     /// once a loop closure is found by sampling, the edge will be used to find more closures,
     /// where the first one was found 
-    QList<int> getPotentialEdgeTargetsWithDijkstra(const Node* new_node, int sequential_targets, int geodesic_targets, int sampled_targets = 5);
+    QList<int> getPotentialEdgeTargetsWithDijkstra(const Node* new_node, int sequential_targets, int geodesic_targets, int sampled_targets = 5, int predecessor_id = -1);
     
     //std::vector<int> getPotentialEdgeTargetsFeatures(const Node* new_node, int max_targets);
     
@@ -152,8 +175,7 @@ protected:
                                 bool draw_outlier = true) const;
     ///Send the transform between openni_camera (the initial position of the cam)
     ///and the cumulative motion. 
-    ///This is called periodically by a ros timer and after each optimizer run
-    void broadcastTransform(const ros::TimerEvent& event);
+    void broadcastTransform(Node* node, tf::Transform& computed_motion);
     ///Constructs a list of transformation matrices from all nodes (used for visualization in glviewer)
     ///The object lives on the heap and needs to be destroyed somewhere else (i.e. in glviewer)
 
@@ -187,17 +209,24 @@ protected:
 
 
     //!Map from node id to node. Assumption is, that ids start at 0 and are consecutive
+    typedef std::pair<int, Node*> GraphNodeType;
+    //QMap<int, Node* > graph_;
     std::map<int, Node* > graph_;
     bool reset_request_;
-    unsigned int marker_id;
+    unsigned int marker_id_;
     int last_matching_node_;
     g2o::SE3Quat edge_to_previous_node_;
     bool batch_processing_runs_;
     bool process_node_runs_;
+    bool localization_only_;
     bool someone_is_waiting_for_me_;
     QMutex optimizer_mutex;
     //cv::FlannBasedMatcher global_flann_matcher;
     QList<int> keyframe_ids_;//Keyframes are added, if no previous keyframe was matched
+    //NEW std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> > feature_coords_;  
+    //NEW cv::Mat feature_descriptors_;         
+    unsigned int loop_closures_edges, sequential_edges;
+    std::string current_backend_;
     
 };
 

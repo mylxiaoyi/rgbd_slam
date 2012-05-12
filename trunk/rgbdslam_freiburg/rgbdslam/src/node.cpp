@@ -40,7 +40,6 @@
 #endif
 
 //#include <iostream>
-#include <Eigen/StdVector>
 #include "misc.h"
 #include <pcl/filters/voxel_grid.h>
 #include <opencv/highgui.h>
@@ -60,6 +59,7 @@ Node::Node(const cv::Mat& visual,
   flannIndex(NULL),
   base2points_(tf::Transform::getIdentity(), depth_header.stamp, ParameterServer::instance()->get<std::string>("base_frame_name"), depth_header.frame_id),
   ground_truth_transform_(tf::Transform::getIdentity(), depth_header.stamp, ParameterServer::instance()->get<std::string>("ground_truth_frame_name"), ParameterServer::instance()->get<std::string>("base_frame_name")),
+  odom_transform_(tf::Transform::getIdentity(), depth_header.stamp, "missing_odometry", depth_header.frame_id),
   initial_node_matches_(0)
 {
   ParameterServer* ps = ParameterServer::instance();
@@ -95,12 +95,13 @@ Node::Node(const cv::Mat& visual,
     clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime2.tv_sec); elapsed += (finish.tv_nsec - starttime2.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "Feature Extraction runtime: "<< elapsed <<" s");
   }
   assert(feature_locations_2d_.size() == feature_locations_3d_.size());
+  assert(feature_locations_3d_.size() == (unsigned int)feature_descriptors_.rows); 
   ROS_INFO_NAMED("statistics", "Feature Count of Node:\t%d", (int)feature_locations_2d_.size());
   size_t max_keyp = ps->get<int>("max_keypoints");
   if(feature_locations_2d_.size() > max_keyp) {
     feature_locations_2d_.resize(max_keyp);
     feature_locations_3d_.resize(max_keyp);
-    feature_descriptors_ = feature_descriptors_.rowRange(0,max_keyp-1);
+    feature_descriptors_ = feature_descriptors_.rowRange(0,max_keyp);
   }
   //computeKeypointDepthStats(depth, feature_locations_2d_);
 
@@ -135,6 +136,7 @@ Node::Node(const cv::Mat visual,
   flannIndex(NULL),
   base2points_(tf::Transform::getIdentity(), point_cloud->header.stamp,ParameterServer::instance()->get<std::string>("base_frame_name"), point_cloud->header.frame_id),
   ground_truth_transform_(tf::Transform::getIdentity(), point_cloud->header.stamp, ParameterServer::instance()->get<std::string>("ground_truth_frame_name"), ParameterServer::instance()->get<std::string>("base_frame_name")),
+  odom_transform_(tf::Transform::getIdentity(), point_cloud->header.stamp, "missing_odometry", point_cloud->header.frame_id),
   initial_node_matches_(0)
 {
   //cv::namedWindow("matches");
@@ -181,13 +183,16 @@ Node::Node(const cv::Mat visual,
   if(ps->get<std::string>("feature_detector_type") != "GICP")
   {
     assert(feature_locations_2d_.size() == feature_locations_3d_.size());
+    assert(feature_locations_3d_.size() == (unsigned int)feature_descriptors_.rows); 
     ROS_INFO_NAMED("statistics", "Feature Count of Node:\t%d", (int)feature_locations_2d_.size());
     size_t max_keyp = ps->get<int>("max_keypoints");
     if(feature_locations_2d_.size() > max_keyp) {
       feature_locations_2d_.resize(max_keyp);
       feature_locations_3d_.resize(max_keyp);
-      feature_descriptors_ = feature_descriptors_.rowRange(0,max_keyp-1);
+      feature_descriptors_ = feature_descriptors_.rowRange(0,max_keyp);
     }
+    assert(feature_locations_2d_.size() == feature_locations_3d_.size());
+    assert(feature_locations_3d_.size() == (unsigned int)feature_descriptors_.rows); 
   }
 
 #ifdef USE_ICP_CODE
@@ -220,17 +225,20 @@ Node::Node(const cv::Mat visual,
 }
 
 Node::~Node() {
-    if (ParameterServer::instance()->get<std::string> ("feature_detector_type").compare("ORB") != 0) {
-        if (flannIndex)
-            delete flannIndex;
-    }
+    delete flannIndex;
 }
 
+void Node::setOdomTransform(tf::StampedTransform gt){
+    odom_transform_ = gt;
+}
 void Node::setGroundTruthTransform(tf::StampedTransform gt){
     ground_truth_transform_ = gt;
 }
-void Node::setBase2PointsTransform(tf::StampedTransform b2p){
+void Node::setBase2PointsTransform(tf::StampedTransform& b2p){
     base2points_ = b2p;
+}
+tf::StampedTransform Node::getOdomTransform(){
+    return odom_transform_;
 }
 tf::StampedTransform Node::getGroundTruthTransform(){
     return ground_truth_transform_;
@@ -373,7 +381,8 @@ bool Node::getRelativeTransformationTo_ICP_bin(const Node* target_node,
 
 // build search structure for descriptor matching
 void Node::buildFlannIndex() {
-  if (ParameterServer::instance()->get<std::string> ("matcher_type") == "FLANN" 
+  if (flannIndex == NULL
+      && ParameterServer::instance()->get<std::string> ("matcher_type") == "FLANN" 
       && ParameterServer::instance()->get<std::string> ("feature_detector_type") != "GICP"
       && ParameterServer::instance()->get<std::string> ("feature_extractor_type") != "ORB")
   {
@@ -381,7 +390,7 @@ void Node::buildFlannIndex() {
     //KDTreeIndexParams When passing an object of this type the index constructed will 
     //consist of a set of randomized kd-trees which will be searched in parallel.
     flannIndex = new cv::flann::Index(feature_descriptors_, cv::flann::KDTreeIndexParams(16));
-    ROS_DEBUG_NAMED(__FILE__, "Built flannIndex (address %p) for Node %i", flannIndex, this->id_);
+    ROS_INFO("Built flannIndex (address %p) for Node %i", flannIndex, this->id_);
     clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
   }
 }
@@ -389,7 +398,7 @@ void Node::buildFlannIndex() {
 
 
 //TODO: This function seems to be resistant to parallelization probably due to knnSearch
-unsigned int Node::findPairsFlann(const Node* other, std::vector<cv::DMatch>* matches) const 
+unsigned int Node::featureMatching(const Node* other, std::vector<cv::DMatch>* matches) const 
 {
   struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
   assert(matches->size()==0);
@@ -426,24 +435,18 @@ unsigned int Node::findPairsFlann(const Node* other, std::vector<cv::DMatch>* ma
     matcher = cv::DescriptorMatcher::create(brute_force_type);
     std::vector< std::vector<cv::DMatch> > bruteForceMatches;
     matcher->knnMatch(feature_descriptors_, other->feature_descriptors_, bruteForceMatches, k);
-    double dist_ratio_fac = ps->get<double>("nn_distance_ratio");
-    //if ((int)bruteForceMatches.size() < min_kp) dist_ratio_fac = 1.0; //if necessary use possibly bad descriptors
+    double max_dist_ratio_fac = ps->get<double>("nn_distance_ratio");
+    //if ((int)bruteForceMatches.size() < min_kp) max_dist_ratio_fac = 1.0; //if necessary use possibly bad descriptors
+    srand((long)std::clock());
     for (unsigned int i = 0; i < bruteForceMatches.size(); i++) {
         cv::DMatch m1 = bruteForceMatches[i][0];
         cv::DMatch m2 = bruteForceMatches[i][1];
-        if (m1.distance < dist_ratio_fac * m2.distance) {//this check seems crucial to matching quality
-            m1.distance = 1; //nearest neighbour
+        float dist_ratio_fac = m1.distance / m2.distance;
+        if (dist_ratio_fac < max_dist_ratio_fac) {//this check seems crucial to matching quality
             sum_distances += m1.distance;
+            m1.distance = dist_ratio_fac + (float)rand()/(1000.0*RAND_MAX); //add a small random offset to the distance, since later the dmatches are inserted to a set, which omits duplicates and the duplicates are found via the less-than function, which works on the distance. Therefore we need to avoid equal distances, which happens very often for ORB
             matches->push_back(m1);
-            //one_nearest_neighbour++;
-        } /*else {
-            m1.distance = 1; //nearest neighbour
-            m2.distance = 2; //second nearest neighbour
-            matches->push_back(m1);
-            matches->push_back(m2);
-            sum_distances += m1.distance + m2.distance;
-            two_nearest_neighbours+=2;
-        }*/
+        } 
 
     }
     //matcher->match(feature_descriptors_, other->feature_descriptors_, *matches);
@@ -452,12 +455,16 @@ unsigned int Node::findPairsFlann(const Node* other, std::vector<cv::DMatch>* ma
            ps->get<std::string>("feature_extractor_type") != "ORB")
   {
     if (other->flannIndex == NULL) {
-        ROS_FATAL("Node %i in findPairsFlann: flann Index of Node %i was not initialized", this->id_, other->id_);
+        ROS_FATAL("Node %i in featureMatching: flann Index of Node %i was not initialized", this->id_, other->id_);
         return -1;
     }
     int start_feature = 0;
-    int num_segments = feature_descriptors_.rows / (ps->get<int>("sufficient_matches")+100.0); //compute number of segments
-    if(num_segments == 0) num_segments=1;
+    int sufficient_matches = ps->get<int>("sufficient_matches");
+    int num_segments = feature_descriptors_.rows / (sufficient_matches+100.0); //compute number of segments
+    if(sufficient_matches <= 0 || num_segments <= 0){
+      num_segments=1;
+      sufficient_matches = std::numeric_limits<int>::max();
+    }
     int num_features = feature_descriptors_.rows / num_segments;                               //compute features per chunk
     for(int seg = 1; start_feature < feature_descriptors_.rows && seg <= num_segments;  seg++){ //search for matches chunkwise
       // compare
@@ -469,7 +476,7 @@ unsigned int Node::findPairsFlann(const Node* other, std::vector<cv::DMatch>* ma
       // get the best two neighbors
       struct timespec flannstarttime, flannfinish; double flannelapsed; clock_gettime(CLOCK_MONOTONIC, &flannstarttime);
       other->flannIndex->knnSearch(relevantDescriptors, indices, dists, k, cv::flann::SearchParams(64));
-      clock_gettime(CLOCK_MONOTONIC, &flannfinish); flannelapsed = (flannfinish.tv_sec - flannstarttime.tv_sec); flannelapsed += (flannfinish.tv_nsec - flannstarttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_NAMED("timings", "Flann knnsearch runtime: "<< flannelapsed <<" s");
+      clock_gettime(CLOCK_MONOTONIC, &flannfinish); flannelapsed = (flannfinish.tv_sec - flannstarttime.tv_sec); flannelapsed += (flannfinish.tv_nsec - flannstarttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(flannelapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", "Flann knnsearch runtime: "<< flannelapsed <<" s");
 
       //64: The number of times the tree(s) in the index should be recursively traversed. A higher value for this parameter would give better search precision, but also take more time. If automatic configuration was used when the index was created, the number of checks required to achieve the specified precision was also computed, in which case this parameter is ignored.
 
@@ -497,7 +504,7 @@ unsigned int Node::findPairsFlann(const Node* other, std::vector<cv::DMatch>* ma
       ROS_INFO("Feature Matches between Nodes %3d (%4d features) and %3d (%4d features) in segment %d/%d (features %d to %d of first node):\t%4d. Percentage: %f%%, Avg NN Ratio: %f",
                 this->id_, (int)this->feature_locations_2d_.size(), other->id_, (int)other->feature_locations_2d_.size(), seg, num_segments, start_feature, start_feature+num_features, 
                 (int)matches->size(), (100.0*matches->size())/((float)start_feature+num_features), avg_ratio / (start_feature+num_features));
-      if((int)matches->size() > ps->get<int>("sufficient_matches")){
+      if((int)matches->size() > sufficient_matches){
         ROS_INFO("Enough matches. Skipping remaining segments");
         break;
       }
@@ -564,12 +571,16 @@ void Node::projectTo3DSiftGPU(std::vector<cv::KeyPoint>& feature_locations_2d,
     ++index;
 
     p2d = feature_locations_2d[i].pt;
-    float Z = depth.at<float>(p2d.y, p2d.x) * depth_scaling;
-
+    float Z;
+    if(ParameterServer::instance()->get<bool>("use_feature_min_depth")){
+      Z = getMinDepthInNeighborhood(depth, p2d, feature_locations_2d[i].size);
+    } else {
+      Z = depth.at<float>(p2d.y, p2d.x) * depth_scaling;
+    }
     // Check for invalid measurements
     if (std::isnan (Z))
     {
-      ROS_DEBUG_NAMED(__FILE__, "Feature %d has been extracted at NaN depth. Omitting", i);
+      ROS_DEBUG("Feature %d has been extracted at NaN depth. Omitting", i);
       feature_locations_2d.erase(feature_locations_2d.begin()+i);
       continue;
     }
@@ -612,8 +623,7 @@ void Node::projectTo3DSiftGPU(std::vector<cv::KeyPoint>& feature_locations_2d,
 }
 
 void Node::projectTo3DSiftGPU(std::vector<cv::KeyPoint>& feature_locations_2d,
-                              std::vector<Eigen::Vector4f, 
-                              Eigen::aligned_allocator<Eigen::Vector4f> >& feature_locations_3d,
+                              std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> >& feature_locations_3d,
                               const pointcloud_type::Ptr point_cloud, 
                               std::vector<float>& descriptors_in, cv::Mat& descriptors_out)
 {
@@ -737,13 +747,16 @@ void Node::projectTo3D(std::vector<cv::KeyPoint>& feature_locations_2d,
       feature_locations_2d.erase(feature_locations_2d.begin()+i);
       continue;
     }
-
-    float Z = depth.at<float>(p2d.y, p2d.x) * depth_scaling;
-
+    float Z;
+    if(ParameterServer::instance()->get<bool>("use_feature_min_depth")){
+      Z = getMinDepthInNeighborhood(depth, p2d, feature_locations_2d[i].size);
+    } else {
+      Z = depth.at<float>(p2d.y, p2d.x) * depth_scaling;
+    }
     // Check for invalid measurements
-    if (std::isnan (Z))
+    if(std::isnan (Z))
     {
-      ROS_DEBUG_NAMED(__FILE__, "Feature %d has been extracted at NaN depth. Omitting", i);
+      ROS_DEBUG("Feature %d has been extracted at NaN depth. Omitting", i);
       feature_locations_2d.erase(feature_locations_2d.begin()+i);
       continue;
     }
@@ -757,78 +770,8 @@ void Node::projectTo3D(std::vector<cv::KeyPoint>& feature_locations_2d,
   clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
 }
 
-
-double errorFunction(const Eigen::Vector4f& x1, const double x1_depth_cov, 
-                     const Eigen::Vector4f& x2, const double x2_depth_cov, 
-                     const Eigen::Matrix4f& tf_1_to_2)
-{
-  const double cam_angle_x = 58.0/180.0*M_PI;
-  const double cam_angle_y = 45.0/180.0*M_PI;
-  const double cam_resol_x = 640;
-  const double cam_resol_y = 480;
-  const double raster_stddev_x = 2*tan(cam_angle_x/cam_resol_x);  //2pix stddev in x
-  const double raster_stddev_y = 2*tan(cam_angle_y/cam_resol_y);  //2pix stddev in y
-  const double raster_cov_x = raster_stddev_x * raster_stddev_x;
-  const double raster_cov_y = raster_stddev_y * raster_stddev_y;
-
-  ROS_WARN_COND(x1(3) != 1.0, "4th element of x1 should be 1.0, is %f", x1(3));
-  ROS_WARN_COND(x2(3) != 1.0, "4th element of x2 should be 1.0, is %f", x2(3));
-  Eigen::Vector3d mu_1 = x1.head<3>().cast<double>();
-  Eigen::Vector3d mu_2 = x2.head<3>().cast<double>();
-  Eigen::Matrix3d rotation_mat = Eigen::Matrix3d::Identity();
-  rotation_mat(0,0) = static_cast<double>(tf_1_to_2(0,0));
-  rotation_mat(0,1) = static_cast<double>(tf_1_to_2(0,1));
-  rotation_mat(0,2) = static_cast<double>(tf_1_to_2(0,2));
-  rotation_mat(1,0) = static_cast<double>(tf_1_to_2(1,0));
-  rotation_mat(1,1) = static_cast<double>(tf_1_to_2(1,1));
-  rotation_mat(1,2) = static_cast<double>(tf_1_to_2(1,2));
-  rotation_mat(2,0) = static_cast<double>(tf_1_to_2(2,0));
-  rotation_mat(2,1) = static_cast<double>(tf_1_to_2(2,1));
-  rotation_mat(2,2) = static_cast<double>(tf_1_to_2(2,2));
-
-  //Point 1
-  Eigen::Matrix3d cov1 = Eigen::Matrix3d::Identity();
-  cov1(0,0) = raster_cov_x* mu_1(2); //how big is 1px std dev in meter, depends on depth
-  cov1(1,1) = raster_cov_y* mu_1(2); //how big is 1px std dev in meter, depends on depth
-  cov1(2,2) = x1_depth_cov;
-  //Point2
-  Eigen::Matrix3d cov2 = Eigen::Matrix3d::Identity();
-  cov2(0,0) = raster_cov_x* mu_2(2); //how big is 1px std dev in meter, depends on depth
-  cov2(1,1) = raster_cov_y* mu_2(2); //how big is 1px std dev in meter, depends on depth
-  cov2(2,2) = x2_depth_cov;
-
-  Eigen::Matrix3d cov2inv = cov2.inverse();
-
-  Eigen::Vector3d mu_1_in_frame_2 = (tf_1_to_2 * x1).head<3>().cast<double>();
-  Eigen::Matrix3d cov1_in_frame_2 = rotation_mat.transpose() * cov1 * rotation_mat;//Works since the cov is diagonal => Eig-Vec-Matrix is Identity
-  Eigen::Matrix3d cov1inv_in_frame_2 = cov1_in_frame_2.inverse();
-
-  Eigen::Vector3d x_ml;//Max Likelhood Position of latent point, that caused the sensor msrmnt
-  x_ml = cov1inv_in_frame_2 * mu_1_in_frame_2 + cov2inv * mu_2; 
-  Eigen::Matrix3d cov_sum = (cov1inv_in_frame_2 + cov2inv);
-  Eigen::Matrix3d inv_cov_sum = cov_sum.inverse();
-  ROS_ERROR_STREAM_COND(inv_cov_sum!=inv_cov_sum,"Sum of Covariances not invertible: \n" << cov_sum);
-  x_ml = inv_cov_sum * x_ml;
-  Eigen::Vector3d delta_mu_1 = mu_1_in_frame_2 - x_ml;
-  Eigen::Vector3d delta_mu_2 = mu_2 - x_ml;
-  
-  float mahalanobis_distance1 = delta_mu_1.transpose() * cov1inv_in_frame_2 * delta_mu_1;// Δx_2^T Σ Δx_2 
-  float mahalanobis_distance2 = delta_mu_2.transpose() * cov2inv * delta_mu_2; // Δx_1^T Σ Δx_1
-  float mahalanobis_distance = mahalanobis_distance1 + mahalanobis_distance2;
-  if(!(mahalanobis_distance >= 0.0)){
-    ROS_WARN_STREAM("mu_1, mu_2, (all in frame 2):\n" << mu_1_in_frame_2 << "\n" << mu_2 << "\ndelta_mu_1, delta_mu_2,\n" << delta_mu_1 << "\n" << delta_mu_2 << "\nx_ml \n" << x_ml);
-    ROS_WARN_STREAM("Covariance of mu_1: \n"<<cov1);
-    ROS_WARN_STREAM("Covariance of mu_2: \n"<<cov2);
-    ROS_WARN_STREAM("Covariance of mu_1 in frame 2: \n"<<cov1_in_frame_2);
-    ROS_WARN_STREAM("Inverse Covariance of mu_1: \n"<<cov1.inverse());
-    ROS_WARN_STREAM("Inverse Covariance of mu_2: \n"<<cov2inv);
-    ROS_WARN_STREAM("Inverse Covariance of mu_1 in frame 2: \n"<<cov1inv_in_frame_2);
-    return std::numeric_limits<double>::max();
-  }
-  return mahalanobis_distance;
-}
-
-void Node::computeInliersAndError(const std::vector<cv::DMatch>& matches,
+template<class CONTAINER>
+void Node::computeInliersAndError(const CONTAINER& matches,
                                   const Eigen::Matrix4f& transformation,
                                   const std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> >& origins,
                                   const std::vector<std::pair<float, float> > origins_depth_stats,
@@ -837,7 +780,8 @@ void Node::computeInliersAndError(const std::vector<cv::DMatch>& matches,
                                   std::vector<cv::DMatch>& inliers, //output var
                                   double& mean_error,
                                   std::vector<double>& errors,
-                                  double squaredMaxInlierDistInM) const{ //output var
+                                  double squaredMaxInlierDistInM) const
+{ //output var
 
   struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
 
@@ -845,120 +789,93 @@ void Node::computeInliersAndError(const std::vector<cv::DMatch>& matches,
   errors.clear();
 
   std::vector<std::pair<float,int> > dists;
-  std::vector<cv::DMatch> inliers_temp;
 
   assert(matches.size() > 0);
   mean_error = 0.0;
-  for (unsigned int j = 0; j < matches.size(); j++){ //compute new error and inliers
-
-    unsigned int this_id = matches[j].queryIdx;
-    unsigned int earlier_id = matches[j].trainIdx;
-
-    const Eigen::Vector4f& origin = origins[this_id];
-    const Eigen::Vector4f& target = earlier[earlier_id];
-    Eigen::Vector4f origin_tfd = (transformation * origins[this_id]);
-    Eigen::Vector4f vec =  origin_tfd - earlier[earlier_id];
-
-    double error = vec.dot(vec);
-    double depth_cov1 = origin(2)*origin(2) * 0.0075; //stddev computed from information on http://www.ros.org/wiki/openni_kinect/kinect_accuracy
-    //if(origins_depth_stats.size() > 0) //currently not in use
-      //depth_cov1 += origins_depth_stats[this_id].second - origins_depth_stats[this_id].first; //maximum depth difference
-    depth_cov1 *= depth_cov1;
-    double depth_cov2 = target(2)*target(2) * 0.0075; //stddev computed from information on http://www.ros.org/wiki/openni_kinect/kinect_accuracy
-    //if(targets_depth_stats.size() > 0) //currently not in use
-      //depth_cov2 += targets_depth_stats[this_id].second - targets_depth_stats[this_id].first; //maximum depth difference
-    depth_cov2 *= depth_cov2;
-    double mahalanobis_ml_error = errorFunction(origin, depth_cov1, target, depth_cov2, transformation);
-    //ROS_DEBUG_STREAM_NAMED(__FILE__, "Mahalanobis Distanz betw. " << origin_tfd << " and " << earlier[earlier_id] << ": " << mahalanobis_ml_error);
-    if(mahalanobis_ml_error > squaredMaxInlierDistInM)
-      continue; //ignore outliers
-    if(!(mahalanobis_ml_error >= 0.0)){
-      ROS_WARN_STREAM("Euclidean Squared Error: "<< error << ", Mahalanobis_ML_Error: "<<mahalanobis_ml_error);
-      ROS_WARN_STREAM("Transformation for error !> 0:\n" << transformation);
-      error /= origins[this_id][2] * earlier[earlier_id][2];
-      ROS_WARN_STREAM("Weighted Euclidean Squared Error: "<< error << ", Mahalanobis_ML_Error: "<<mahalanobis_ml_error);
-      ROS_WARN_STREAM(error << " " << matches.size());
+  BOOST_FOREACH(const cv::DMatch& m, matches)
+  {
+    const Eigen::Vector4f& origin = origins[m.queryIdx];
+    const Eigen::Vector4f& target = earlier[m.trainIdx];
+    if(origin(2) == 0.0 || target(2) == 0.0){
+       ROS_WARN_STREAM("Invalid point. Query Pt " << m.queryIdx << ":\n" << origin << "\nTarget Pt " << m.trainIdx << ":\n" << target);
+       continue;
     }
-    error = sqrt(mahalanobis_ml_error);
-    dists.push_back(std::pair<float,int>(error,j));
-    inliers_temp.push_back(matches[j]); //include inlier
-
-    mean_error += error;
-    errors.push_back(mahalanobis_ml_error);
+    double mahal_dist = errorFunction2(origin, target, transformation);
+    if(mahal_dist > squaredMaxInlierDistInM)
+      continue; //ignore outliers
+    if(!(mahal_dist >= 0.0)){
+      ROS_WARN_STREAM("Mahalanobis_ML_Error: "<<mahal_dist);
+      ROS_WARN_STREAM("Transformation for error !>= 0:\n" << transformation << "Matches: " << matches.size());
+      continue;
+    }
+    inliers.push_back(m); //include inlier
+    mean_error += mahal_dist;
+    errors.push_back(mahal_dist );
   }
 
-  if (inliers_temp.size()<3){ //at least the samples should be inliers
-    ROS_WARN_COND(inliers_temp.size() > 3, "No inliers at all in %d matches!", (int)matches.size()); // only warn if this checks for all initial matches
+  if (inliers.size()<3){ //at least the samples should be inliers
+    ROS_WARN_COND(inliers.size() > 3, "No inliers at all in %d matches!", (int)matches.size()); // only warn if this checks for all initial matches
     mean_error = 1e9;
   } else {
-    mean_error /= inliers_temp.size();
-
-    // sort inlier ascending according to their error
-    sort(dists.begin(),dists.end());
-
-    inliers.resize(inliers_temp.size());
-    for (unsigned int i=0; i<inliers_temp.size(); i++){
-      inliers[i] = matches[dists[i].second];
-    }
+    mean_error /= inliers.size();
+    mean_error = sqrt(mean_error);
   }
   if(!(mean_error>0)) ROS_DEBUG_STREAM("Transformation for mean error !> 0: " << transformation);
-  if(!(mean_error>0)) ROS_DEBUG_STREAM(mean_error << " " << inliers_temp.size());
+  if(!(mean_error>0)) ROS_DEBUG_STREAM(mean_error << " " << inliers.size());
   clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
 
 }
 
-template<class InputIterator>
+template<class CONTAINER>
+Eigen::Matrix4f Node::getTransformFromMatchesUmeyama(const Node* earlier_node, CONTAINER matches) const 
+{
+  Eigen::Matrix<float, 3, Eigen::Dynamic> to(3,matches.size()), from(3,matches.size());
+  typename CONTAINER::const_iterator it = matches.begin();
+  for (int i = 0 ;it!=matches.end(); it++, i++) {
+    int this_id    = it->queryIdx;
+    int earlier_id = it->trainIdx;
+
+    from.col(i) = this->feature_locations_3d_[this_id].head<3>();
+    to.col(i) = earlier_node->feature_locations_3d_[earlier_id].head<3>();
+  }
+  Eigen::Matrix4f res = Eigen::umeyama(from, to, false);
+  return res;
+}
+
+template<class CONTAINER>
 Eigen::Matrix4f Node::getTransformFromMatches(const Node* earlier_node,
-                                              InputIterator iter_begin,
-                                              InputIterator iter_end,
+                                              const CONTAINER & matches,
                                               bool& valid, 
-                                              float max_dist_m) const 
+                                              const float max_dist_m) const 
 {
   pcl::TransformationFromCorrespondences tfc;
   valid = true;
   std::vector<Eigen::Vector3f> t, f;
 
-  for ( ;iter_begin!=iter_end; iter_begin++) {
-    int this_id    = iter_begin->queryIdx;
-    int earlier_id = iter_begin->trainIdx;
+  BOOST_FOREACH(const cv::DMatch& m, matches)
+  {
+    Eigen::Vector3f from = this->feature_locations_3d_[m.queryIdx].head<3>();
+    Eigen::Vector3f to = earlier_node->feature_locations_3d_[m.trainIdx].head<3>();
 
-    Eigen::Vector3f from(this->feature_locations_3d_[this_id][0],
-                         this->feature_locations_3d_[this_id][1],
-                         this->feature_locations_3d_[this_id][2]);
-    Eigen::Vector3f  to (earlier_node->feature_locations_3d_[earlier_id][0],
-                         earlier_node->feature_locations_3d_[earlier_id][1],
-                         earlier_node->feature_locations_3d_[earlier_id][2]);
+    //Validate that 3D distances are corresponding
     if (max_dist_m > 0) {  //storing is only necessary, if max_dist is given
+      if(f.size() >= 1)
+      {
+        float delta_f = (from - f.back()).squaredNorm();//distance to the previous query point
+        float delta_t = (to   - t.back()).squaredNorm();//distance from one to the next train point
+
+        if ( abs(delta_f-delta_t) > max_dist_m * max_dist_m ) {
+          valid = false;
+          return Eigen::Matrix4f();
+        }
+      }
       f.push_back(from);
       t.push_back(to);    
     }
-    tfc.add(from, to, 1.0/(to(2)*to(2)));//the further, the less weight b/c of quadratic accuracy decay
+
+    tfc.add(from, to,1.0);// 1.0/(to(2)*to(2)));//the further, the less weight b/c of quadratic accuracy decay
   }
 
-
-  // find smalles distance between a point and its neighbour in the same cloud
-  // je groesser das dreieck aufgespannt ist, desto weniger fallen kleine positionsfehler der einzelnen
-  // Punkte ist Gewicht!
-
-  if (max_dist_m > 0)
-  {  
-    //float min_neighbour_dist = 1e6;
-    Eigen::Matrix4f foo;
-
-    valid = true;
-    for (uint i=0; i<f.size(); i++)
-    {
-      float d_f = (f.at((i+1)%f.size())-f.at(i)).norm();
-      float d_t = (t.at((i+1)%t.size())-t.at(i)).norm();
-
-      if ( abs(d_f-d_t) > max_dist_m ) {
-        valid = false;
-        return Eigen::Matrix4f();
-      }
-    }
-    //here one could signal that some samples are very close, but as the transformation is validated elsewhere we don't
-    //if (min_neighbour_dist < 0.5) { ROS_INFO...}
-  }
   // get relative movement from samples
   return tfc.getTransformation().matrix();
 }
@@ -1004,35 +921,48 @@ bool Node::getRelativeTransformationTo(const Node* earlier_node,
   unsigned int best_inlier_coarse = 0;
 
   Eigen::Matrix4f transformation;
+  Eigen::Matrix4f transformationU;
   
   //INITIALIZATION STEP WITH RANDOM SAMPLES ###############################################
   const unsigned int sample_size = 3;// chose this many randomly from the correspondences:
   for (int n_iter = 0; n_iter < ransac_iterations; n_iter++) {
     //generate a map of samples. Using a map solves the problem of drawing a sample more than once
     std::set<cv::DMatch> sample_matches;
-    std::vector<cv::DMatch> sample_matches_vector;
     while(sample_matches.size() < sample_size){
       int id = rand() % initial_matches->size();
       sample_matches.insert(initial_matches->at(id));
-      sample_matches_vector.push_back(initial_matches->at(id));
     }
 
     bool valid; // valid is false iff the sampled points clearly aren't inliers themself 
-    transformation = getTransformFromMatches(earlier_node, sample_matches.begin(), sample_matches.end(),valid,max_dist_m);
+    //ROS_INFO_STREAM("TRANSFORMATIONS");
+    transformation = getTransformFromMatches(earlier_node, sample_matches,valid,max_dist_m);
+    //ROS_INFO_STREAM("tfc:\n" <<  transformation);
+    //transformationU = getTransformFromMatchesUmeyama(earlier_node, sample_matches);
+    //ROS_INFO_STREAM("Umeyama:\n" <<  transformationU);
     if (!valid) continue; // valid is false iff the sampled points aren't inliers themself 
     if(transformation!=transformation) continue; //Contains NaN
-    
     //test whether samples are inliers (more strict than before)
-    computeInliersAndError(sample_matches_vector, transformation, 
+    computeInliersAndError(sample_matches, transformation, 
                            this->feature_locations_3d_, 
                            this->feature_depth_stats_, 
                            earlier_node->feature_locations_3d_, 
                            earlier_node->feature_depth_stats_, 
                            inlier, inlier_error,  /*output*/
                            dummy, max_dist_m*max_dist_m); 
+    
     ROS_DEBUG_NAMED(__FILE__, "Transformation from and for %u samples results in an error of %f and %i inliers.", sample_size, inlier_error, (int)inlier.size());
     if(inlier_error > 1000) continue; //most possibly a false match in the samples
-
+/*
+    //COARSE ESTIMATE TO THROW OUT SURE OUTLIERS
+    computeInliersAndError(*initial_matches, transformationU, 
+                           this->feature_locations_3d_, 
+                           this->feature_depth_stats_, 
+                           earlier_node->feature_locations_3d_, 
+                           earlier_node->feature_depth_stats_, 
+                           inlier, inlier_error, 
+                           dummy, max_dist_m*max_dist_m*4); //use twice the distance (4x squared dist) to get more inliers for refinement
+    ROS_INFO_NAMED("statistics", "Umeyama Transforma from %u samples results in an error of %f and %i inliers for all matches (%i).", sample_size, inlier_error, (int)inlier.size(), (int)initial_matches->size());
+    */
     //COARSE ESTIMATE TO THROW OUT SURE OUTLIERS
     computeInliersAndError(*initial_matches, transformation, 
                            this->feature_locations_3d_, 
@@ -1041,7 +971,7 @@ bool Node::getRelativeTransformationTo(const Node* earlier_node,
                            earlier_node->feature_depth_stats_, 
                            inlier, inlier_error,  /*output*/
                            dummy, max_dist_m*max_dist_m*4); //use twice the distance (4x squared dist) to get more inliers for refinement
-    ROS_DEBUG_NAMED(__FILE__, "Transformation from %u samples results in an error of %f and %i inliers for all matches (%i).", sample_size, inlier_error, (int)inlier.size(), (int)initial_matches->size());
+    ROS_DEBUG_NAMED("statistics", "TFC Transformation from %u samples results in an error of %f and %i inliers for all matches (%i).", sample_size, inlier_error, (int)inlier.size(), (int)initial_matches->size());
 
     if(inlier.size() < min_inlier_threshold || inlier_error > max_dist_m){
       ROS_DEBUG_NAMED(__FILE__, "Skipped iteration: inliers: %i (min %i), inlier_error: %.2f (max %.2f)", (int)inlier.size(), (int) min_inlier_threshold,  inlier_error*100, max_dist_m*100);
@@ -1079,7 +1009,7 @@ bool Node::getRelativeTransformationTo(const Node* earlier_node,
 
     //REFINEMENT STEP FROM INLIERS ###############################################
     double new_inlier_error;
-    transformation = getTransformFromMatches(earlier_node, matches.begin(), matches.end(), valid); // compute new trafo from all inliers:
+    transformation = getTransformFromMatches(earlier_node, matches, valid); // compute new trafo from all inliers:
     if(transformation!=transformation) continue; //Contains NaN
     computeInliersAndError(*initial_matches, transformation,
                            this->feature_locations_3d_, 
@@ -1147,7 +1077,7 @@ MatchingResult Node::matchNodePair(const Node* older_node)
   const unsigned int min_matches = (unsigned int) ParameterServer::instance()->get<int>("min_matches");// minimal number of feature correspondences to be a valid candidate for a link
   // struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
 
-  this->findPairsFlann(older_node, &mr.all_matches); 
+  this->featureMatching(older_node, &mr.all_matches); 
 
   ROS_DEBUG_NAMED(__FILE__, "found %i inital matches",(int) mr.all_matches.size());
   if (mr.all_matches.size() < min_matches){
@@ -1159,7 +1089,7 @@ MatchingResult Node::matchNodePair(const Node* older_node)
       //Statistics
       float nn_ratio = 0.0;
       if(found_transformation){
-        double w = (double)mr.inlier_matches.size();///(double)mr.all_matches.size();
+        double w = 1.0 + (double)mr.inlier_matches.size()-(double)min_matches;///(double)mr.all_matches.size();
         for(unsigned int i = 0; i < mr.inlier_matches.size(); i++){
           nn_ratio += mr.inlier_matches[i].distance;
         }

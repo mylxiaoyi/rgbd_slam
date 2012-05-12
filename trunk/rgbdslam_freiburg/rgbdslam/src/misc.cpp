@@ -286,9 +286,10 @@ FeatureDetector* createDetector( const string& detectorType )
                  SIFT::DetectorParams::GET_DEFAULT_EDGE_THRESHOLD());
     }
     else if( !detectorType.compare( "SURF" ) ) {
+      /* fd = new SurfFeatureDetector(200.0, 6, 5); */
         fd = new DynamicAdaptedFeatureDetector(new SurfAdjuster(),
         										params->get<int>("min_keypoints"),
-                            params->get<int>("max_keypoints"),
+                            params->get<int>("max_keypoints")+300,
                             params->get<int>("adjuster_max_iterations"));
     }
     else if( !detectorType.compare( "MSER" ) ) {
@@ -302,12 +303,13 @@ FeatureDetector* createDetector( const string& detectorType )
     }
 #if CV_MAJOR_VERSION > 2 || CV_MINOR_VERSION >= 3
     else if( !detectorType.compare( "ORB" ) ) {
-        fd = new OrbFeatureDetector(params->get<int>("max_keypoints"),
+        fd = new OrbFeatureDetector(params->get<int>("max_keypoints")+1500,
                 ORB::CommonParams(1.2, ORB::CommonParams::DEFAULT_N_LEVELS, 31, ORB::CommonParams::DEFAULT_FIRST_LEVEL));
     }
 #endif
     else if( !detectorType.compare( "SIFTGPU" ) ) {
-      ROS_INFO("%s is to be used, creating SURF detector as fallback.", detectorType.c_str());
+      ROS_INFO("%s is to be used", detectorType.c_str());
+      ROS_DEBUG("Creating SURF detector as fallback.");
       fd = createDetector("SURF"); //recursive call with correct parameter
     }
     else {
@@ -426,9 +428,9 @@ pointcloud_type* createXYZRGBPointCloud (const sensor_msgs::ImageConstPtr& depth
   pointcloud_type* cloud (new pointcloud_type() );
   cloud->header.stamp     = depth_msg->header.stamp;
   cloud->header.frame_id  = rgb_msg->header.frame_id;
-  cloud->is_dense         = false;
+  cloud->is_dense         = true; //single point of view, 2d rasterized
 
-  float cx, cy, fx,fy;//principal point and focal lengths
+  float cx, cy, fx, fy;//principal point and focal lengths
   unsigned color_step, color_skip;
 
   cloud->height = depth_msg->height;
@@ -437,10 +439,11 @@ pointcloud_type* createXYZRGBPointCloud (const sensor_msgs::ImageConstPtr& depth
   cy = cam_info->K[5]; //(cloud->height >> 1) - 0.5f;
   fx = 1.0f / cam_info->K[0]; 
   fy = 1.0f / cam_info->K[4]; 
-  int pixel_data_size = 0;
-
+  int pixel_data_size = 3;
+  char red_idx = 0, green_idx = 1, blue_idx = 2;
   if(rgb_msg->encoding.compare("mono8") == 0) pixel_data_size = 1;
-  if(rgb_msg->encoding.compare("rgb8") == 0) pixel_data_size = 3;
+  if(rgb_msg->encoding.compare("bgr8") == 0) { red_idx = 2; blue_idx = 0; }
+
 
   ROS_ERROR_COND(pixel_data_size == 0, "Unknown image encoding: %s!", rgb_msg->encoding.c_str());
   color_step = pixel_data_size * rgb_msg->width / cloud->width;
@@ -478,9 +481,9 @@ pointcloud_type* createXYZRGBPointCloud (const sensor_msgs::ImageConstPtr& depth
       // Fill in color
       RGBValue color;
       if(pixel_data_size == 3){
-        color.Red   = rgb_buffer[color_idx];
-        color.Green = rgb_buffer[color_idx + 1];
-        color.Blue  = rgb_buffer[color_idx + 2];
+        color.Red   = rgb_buffer[color_idx + red_idx];
+        color.Green = rgb_buffer[color_idx + green_idx];
+        color.Blue  = rgb_buffer[color_idx + blue_idx];
       } else {
         color.Red   = color.Green = color.Blue  = rgb_buffer[color_idx];
       }
@@ -491,4 +494,138 @@ pointcloud_type* createXYZRGBPointCloud (const sensor_msgs::ImageConstPtr& depth
 
   clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
   return cloud;
+}
+
+double errorFunction(const Eigen::Vector4f& x1, const double x1_depth_cov, 
+                     const Eigen::Vector4f& x2, const double x2_depth_cov, 
+                     const Eigen::Matrix4f& tf_1_to_2)
+{
+  const double cam_angle_x = 58.0/180.0*M_PI;
+  const double cam_angle_y = 45.0/180.0*M_PI;
+  const double cam_resol_x = 640;
+  const double cam_resol_y = 480;
+  const double raster_stddev_x = 2*tan(cam_angle_x/cam_resol_x);  //2pix stddev in x
+  const double raster_stddev_y = 2*tan(cam_angle_y/cam_resol_y);  //2pix stddev in y
+  const double raster_cov_x = raster_stddev_x * raster_stddev_x;
+  const double raster_cov_y = raster_stddev_y * raster_stddev_y;
+
+  ROS_WARN_COND(x1(3) != 1.0, "4th element of x1 should be 1.0, is %f", x1(3));
+  ROS_WARN_COND(x2(3) != 1.0, "4th element of x2 should be 1.0, is %f", x2(3));
+  
+  Eigen::Vector3d mu_1 = x1.head<3>().cast<double>();
+  Eigen::Vector3d mu_2 = x2.head<3>().cast<double>();
+  Eigen::Matrix3d rotation_mat = tf_1_to_2.block(0,0,3,3).cast<double>();
+
+  //Point 1
+  Eigen::Matrix3d cov1 = Eigen::Matrix3d::Identity();
+  cov1(0,0) = raster_cov_x* mu_1(2); //how big is 1px std dev in meter, depends on depth
+  cov1(1,1) = raster_cov_y* mu_1(2); //how big is 1px std dev in meter, depends on depth
+  cov1(2,2) = x1_depth_cov;
+  //Point2
+  Eigen::Matrix3d cov2 = Eigen::Matrix3d::Identity();
+  cov2(0,0) = raster_cov_x* mu_2(2); //how big is 1px std dev in meter, depends on depth
+  cov2(1,1) = raster_cov_y* mu_2(2); //how big is 1px std dev in meter, depends on depth
+  cov2(2,2) = x2_depth_cov;
+
+  Eigen::Matrix3d cov2inv = cov2.inverse(); // Σ₂⁻¹  
+
+  Eigen::Vector3d mu_1_in_frame_2 = (tf_1_to_2 * x1).head<3>().cast<double>(); // μ₁⁽²⁾  = T₁₂ μ₁⁽¹⁾  
+  Eigen::Matrix3d cov1_in_frame_2 = rotation_mat.transpose() * cov1 * rotation_mat;//Works since the cov is diagonal => Eig-Vec-Matrix is Identity
+  Eigen::Matrix3d cov1inv_in_frame_2 = cov1_in_frame_2.inverse();// Σ₁⁻¹  
+
+  Eigen::Matrix3d cov_sum = (cov1inv_in_frame_2 + cov2inv);
+  Eigen::Matrix3d inv_cov_sum = cov_sum.inverse();
+  ROS_ERROR_STREAM_COND(inv_cov_sum!=inv_cov_sum,"Sum of Covariances not invertible: \n" << cov_sum);
+
+  Eigen::Vector3d x_ml;//Max Likelhood Position of latent point, that caused the sensor msrmnt
+  x_ml = inv_cov_sum * (cov1inv_in_frame_2 * mu_1_in_frame_2 + cov2inv * mu_2); // (Σ₁⁻¹ +  Σ₂⁻¹)⁻¹(Σ₁⁻¹μ₁  +  Σ₂⁻¹μ₂)
+  Eigen::Vector3d delta_mu_1 = mu_1_in_frame_2 - x_ml;
+  Eigen::Vector3d delta_mu_2 = mu_2 - x_ml;
+  
+  float sqrd_mahalanobis_distance1 = delta_mu_1.transpose() * cov1inv_in_frame_2 * delta_mu_1;// Δx_2^T Σ Δx_2 
+  float sqrd_mahalanobis_distance2 = delta_mu_2.transpose() * cov2inv * delta_mu_2; // Δx_1^T Σ Δx_1
+  float bad_mahalanobis_distance = sqrd_mahalanobis_distance1 + sqrd_mahalanobis_distance2; //FIXME
+
+  if(!(bad_mahalanobis_distance >= 0.0))
+  {
+    ROS_ERROR_STREAM("Non-Positive Mahalanobis Distance");
+    return std::numeric_limits<double>::max();
+  }
+  ROS_DEBUG_STREAM_NAMED("statistics", "Mahalanobis ML: " << std::setprecision(25) << bad_mahalanobis_distance);
+  return bad_mahalanobis_distance;
+}
+
+
+double errorFunction2(const Eigen::Vector4f& x1,
+                      const Eigen::Vector4f& x2,
+                      const Eigen::Matrix4f& tf_1_to_2)
+{
+  static const double cam_angle_x = 58.0/180.0*M_PI;/*{{{*/
+  static const double cam_angle_y = 45.0/180.0*M_PI;
+  static const double cam_resol_x = 640;
+  static const double cam_resol_y = 480;
+  static const double raster_stddev_x = 2*tan(cam_angle_x/cam_resol_x);  //2pix stddev in x
+  static const double raster_stddev_y = 2*tan(cam_angle_y/cam_resol_y);  //2pix stddev in y
+  static const double raster_cov_x = raster_stddev_x * raster_stddev_x;
+  static const double raster_cov_y = raster_stddev_y * raster_stddev_y;/*}}}*/
+
+  ROS_WARN_COND(x1(3) != 1.0, "4th element of x1 should be 1.0, is %f", x1(3));
+  ROS_WARN_COND(x2(3) != 1.0, "4th element of x2 should be 1.0, is %f", x2(3));
+
+  Eigen::Vector3d mu_1 = x1.head<3>().cast<double>();
+  Eigen::Vector3d mu_1_in_frame_2 = (tf_1_to_2 * x1).head<3>().cast<double>(); // μ₁⁽²⁾  = T₁₂ μ₁⁽¹⁾  
+  Eigen::Vector3d mu_2 = x2.head<3>().cast<double>();
+  Eigen::Matrix3d rotation_mat = tf_1_to_2.block(0,0,3,3).cast<double>();
+
+  //Point 1
+  Eigen::Matrix3d cov1 = Eigen::Matrix3d::Zero();
+  cov1(0,0) = 1 * raster_cov_x * mu_1(2); //how big is 1px std dev in meter, depends on depth
+  cov1(1,1) = 1 * raster_cov_y * mu_1(2); //how big is 1px std dev in meter, depends on depth
+  cov1(2,2) = mu_1(2)*mu_1(2) * 0.0075; //stddev computed from information on http://www.ros.org/wiki/openni_kinect/kinect_accuracy
+  //Point2
+  Eigen::Matrix3d cov2 = Eigen::Matrix3d::Zero();
+  cov2(0,0) = 1 * raster_cov_x* mu_2(2); //how big is 1px std dev in meter, depends on depth
+  cov2(1,1) = 1 * raster_cov_y* mu_2(2); //how big is 1px std dev in meter, depends on depth
+  cov1(2,2) = mu_2(2)*mu_2(2) * 0.0075; //stddev computed from information on http://www.ros.org/wiki/openni_kinect/kinect_accuracy
+
+  Eigen::Matrix3d cov1_in_frame_2 = rotation_mat.transpose() * cov1 * rotation_mat;//Works since the cov is diagonal => Eig-Vec-Matrix is Identity
+
+  // Δμ⁽²⁾ =  μ₁⁽²⁾ - μ₂⁽²⁾
+  Eigen::Vector3d delta_mu_in_frame_2 = mu_1_in_frame_2 - mu_2;
+  // Σc = (Σ₁ + Σ₂)
+  Eigen::Matrix3d cov_mat_sum_in_frame_2 = cov1_in_frame_2 + cov2;     
+  //ΔμT Σc⁻¹Δμ  
+  double sqrd_mahalanobis_distance = delta_mu_in_frame_2.transpose() * cov_mat_sum_in_frame_2.inverse() * delta_mu_in_frame_2;
+  
+  if(!(sqrd_mahalanobis_distance >= 0.0))
+  {
+    ROS_ERROR_STREAM("Non-Positive Mahalanobis Distance for vectors " << x1 << "\nand\n" << x2 << " with covariances\n" << cov1 << "\nand\n" << cov2);
+    return std::numeric_limits<double>::max();
+  }
+  //ROS_INFO_STREAM_NAMED("statistics", "Probability: " << std::setprecision(10) << probability << " Normalization: " << normalization);
+  ROS_DEBUG_STREAM_NAMED("statistics", "Mahalanobis Distance: " << sqrd_mahalanobis_distance);
+  ROS_DEBUG_STREAM_NAMED("statistics", "Covariance Matrix:\n" << cov_mat_sum_in_frame_2);
+  ROS_DEBUG_STREAM_NAMED("statistics", "Sigma 1:\n" << cov1 << "\nSigma 2:\n" << cov2);
+  ROS_DEBUG_STREAM_NAMED("statistics", "Sigma 1 in Frame 2:\n" << cov1_in_frame_2 << "\nDelta mu: " << delta_mu_in_frame_2);
+  ROS_DEBUG_STREAM_NAMED("statistics", "Transformation Matrix:\n" << tf_1_to_2 << "\nRotation:\n" << rotation_mat.transpose() * rotation_mat);
+  return sqrd_mahalanobis_distance;
+}
+
+float getMinDepthInNeighborhood(const cv::Mat& depth, cv::Point2f center, float diameter){
+    // Get neighbourhood area of keypoint
+    int radius = (diameter - 1)/2;
+    int top   = center.y - radius; top   = top   < 0 ? 0 : top;
+    int left  = center.x - radius; left  = left  < 0 ? 0 : left;
+    int bot   = center.y + radius; bot   = bot   > depth.rows ? depth.rows : bot;
+    int right = center.x + radius; right = right > depth.cols ? depth.cols : right;
+
+    cv::Mat neigborhood(depth, cv::Range(top, bot), cv::Range(left,right));
+    double minZ = std::numeric_limits<float>::quiet_NaN();
+    cv::minMaxLoc(neigborhood, &minZ);
+    if(minZ == 0.0){ //FIXME: Why are there features with depth set to zero?
+      ROS_WARN_THROTTLE(1,"Caught feature with zero in depth neighbourhood");
+      minZ = std::numeric_limits<float>::quiet_NaN();
+    }
+
+    return static_cast<float>(minZ);
 }

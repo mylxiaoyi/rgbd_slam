@@ -66,6 +66,7 @@ Q_SIGNALS:
     void sendAllClouds(); ///< Signifies the sending of the whole model
     ///User wants the current world model to be saved to a pcd-file or ply file
     void saveAllClouds(QString filename);
+    void saveAllFeatures(QString filename);
     void saveTrajectory(QString filename);
     ///User wants the current world model to be saved to one pcd-file per node
     void saveIndividualClouds(QString file_basename);
@@ -74,6 +75,7 @@ Q_SIGNALS:
     void optimizeGraph();
     void printEdgeErrors(QString);
     void pruneEdgesWithErrorAbove(float);
+    void toggleMapping(bool);
      
 public Q_SLOTS:
     void setVisualImage(QImage);
@@ -91,6 +93,7 @@ private Q_SLOTS:
     void saveAll();
     void saveIndividual();
     void quickSaveAll();
+    void saveFeatures();
     void pause(bool);
     void bagRecording(bool);
     void about();
@@ -107,6 +110,8 @@ private Q_SLOTS:
     void showEdgeErrors();
     void pruneEdgesWithHighError();
     void toggleFullscreen(bool);
+    void toggleCloudStorage(bool);
+    void toggleMappingPriv(bool);
 private:
     //!Menus and Menu elements are defined here
     void createMenus();
