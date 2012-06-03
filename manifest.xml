@@ -26,6 +26,7 @@
   <rosdep name="libglew"/>
   <rosdep name="libdevil"/>
   <rosdep name="gsl-dev"/>
+  <rosdep name="gl2ps"/>
   <export>
     <rosdoc config="rosdoc.yaml" />
     <nodelet plugin="${prefix}/nodelet_plugins.xml" />
