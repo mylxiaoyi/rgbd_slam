@@ -32,6 +32,11 @@
 
 const double PI= 3.14159265358979323846;
 
+template <typename PointType>
+inline bool validXYZ(const PointType& p){
+      return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
+};
+
 GLViewer::GLViewer(QWidget *parent)
     : QGLWidget(QGLFormat(QGL::SampleBuffers|QGL::StereoBuffers), parent),
       xRot(180*16.0),
@@ -376,12 +381,12 @@ void GLViewer::pointCloud2GLStrip(pointcloud_type * pc){
             using namespace pcl;
             if(!strip_on){ //Generate vertices for new triangle
                 const point_type* ll = &pc->points[(x)+(y+step)*w]; //one down (lower left corner)
-                if(!hasValidXYZ(*ll)) continue; // both new triangles in this step would use this point
+                if(!validXYZ(*ll)) continue; // both new triangles in this step would use this point
                 const point_type* ur = &pc->points[(x+step)+y*w]; //one right (upper right corner)
-                if(!hasValidXYZ(*ur)) continue; // both new triangles in this step would use this point
+                if(!validXYZ(*ur)) continue; // both new triangles in this step would use this point
           
                 const point_type* ul = &pc->points[x+y*w]; //current point (upper right)
-                if(hasValidXYZ(*ul)){ //ul, ur, ll all valid
+                if(validXYZ(*ul)){ //ul, ur, ll all valid
                   depth = squaredEuclideanDistance(*ul,origin);
                   if (squaredEuclideanDistance(*ul,*ll)/depth <= mesh_thresh  and 
                       squaredEuclideanDistance(*ul,*ll)/depth <= mesh_thresh  and
@@ -402,7 +407,7 @@ void GLViewer::pointCloud2GLStrip(pointcloud_type * pc){
                 } 
                 if(!strip_on) { //can't use the point on the upper left, should I still init a triangle?
                   const point_type* lr = &pc->points[(x+step)+(y+step)*w]; //one right-down (lower right)
-                  if(!hasValidXYZ(*lr)) {
+                  if(!validXYZ(*lr)) {
                     //if this is not valid, there is no way to make a new triangle in the next step
                     //and one could have been drawn starting in this step, only if ul had been valid
                     x++;
@@ -434,7 +439,7 @@ void GLViewer::pointCloud2GLStrip(pointcloud_type * pc){
               const point_type* ul;
               if(flip){ ul = &pc->points[(x)+(y+step)*w]; } //one down (lower left corner) 
               else { ul = &pc->points[x+y*w]; } //current point (upper right)
-              if(hasValidXYZ(*ul)){ //Neighbours to the left are prepared
+              if(validXYZ(*ul)){ //Neighbours to the left are prepared
                 depth = squaredEuclideanDistance(*ul,origin);
                 if (squaredEuclideanDistance(*ul,*(ul-step))/depth > mesh_thresh){
                   glEnd();
@@ -459,7 +464,7 @@ void GLViewer::pointCloud2GLStrip(pointcloud_type * pc){
               const point_type* ll;
               if(flip){ ll = &pc->points[x+y*w]; } //current point (upper right)
               else { ll = &pc->points[(x)+(y+step)*w]; } //one down (lower left corner) 
-              if(hasValidXYZ(*ll)){ 
+              if(validXYZ(*ll)){ 
                 depth = squaredEuclideanDistance(*ll,origin);
                 if (squaredEuclideanDistance(*ul,*ll)/depth > mesh_thresh or
                     squaredEuclideanDistance(*ul,*(ul-step))/depth > mesh_thresh or
@@ -530,22 +535,22 @@ void GLViewer::pointCloud2GLList(pointcloud_type const * pc){
 
             const point_type* pi = &pc->points[x+y*w]; //current point
 
-            if(!(hasValidXYZ(*pi))) continue;
+            if(!(validXYZ(*pi))) continue;
             depth = squaredEuclideanDistance(*pi,origin);
 
             const point_type* pl = &pc->points[(x+1)+(y+1)*w]; //one right-down
-            if(!(hasValidXYZ(*pl)) or squaredEuclideanDistance(*pi,*pl)/depth > mesh_thresh)  
+            if(!(validXYZ(*pl)) or squaredEuclideanDistance(*pi,*pl)/depth > mesh_thresh)  
               continue;
 
             const point_type* pj = &pc->points[(x+1)+y*w]; //one right
-            if(hasValidXYZ(*pj)
+            if(validXYZ(*pj)
                and squaredEuclideanDistance(*pi,*pj)/depth <= mesh_thresh  
                and squaredEuclideanDistance(*pj,*pl)/depth <= mesh_thresh){
               drawTriangle(*pi, *pj, *pl);
             }
             const point_type* pk = &pc->points[(x)+(y+1)*w]; //one down
             
-            if(hasValidXYZ(*pk)
+            if(validXYZ(*pk)
                and squaredEuclideanDistance(*pi,*pk)/depth <= mesh_thresh  
                and squaredEuclideanDistance(*pk,*pl)/depth <= mesh_thresh){
               drawTriangle(*pi, *pk, *pl);
