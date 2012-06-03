@@ -27,6 +27,13 @@
 
 #include <pcl_ros/transforms.h>
 
+#if CV_MAJOR_VERSION > 2 || CV_MINOR_VERSION >= 4
+#include "opencv2/core/core.hpp"
+#include "opencv2/features2d/features2d.hpp"
+#include "opencv2/highgui/highgui.hpp"
+#include "opencv2/nonfree/nonfree.hpp"
+#endif
+
 void printQMatrix4x4(const char* name, const QMatrix4x4& m){
     ROS_DEBUG("QMatrix %s:", name);
     ROS_DEBUG("%f\t%f\t%f\t%f", m(0,0), m(0,1), m(0,2), m(0,3));
@@ -279,11 +286,15 @@ FeatureDetector* createDetector( const string& detectorType )
                                       8/*line_threshold_binarized*/, 5/*suppress_nonmax_size*/ );
     }
     else if( !detectorType.compare( "SIFT" ) ) {
+#if CV_MAJOR_VERSION > 2 || CV_MINOR_VERSION <= 3
         fd = new SiftFeatureDetector(SIFT::DetectorParams::GET_DEFAULT_THRESHOLD(),
                                      SIFT::DetectorParams::GET_DEFAULT_EDGE_THRESHOLD());
         ROS_INFO("Default SIFT threshold: %f, Default SIFT Edge Threshold: %f", 
                  SIFT::DetectorParams::GET_DEFAULT_THRESHOLD(),
                  SIFT::DetectorParams::GET_DEFAULT_EDGE_THRESHOLD());
+#else
+        fd = new SiftFeatureDetector();
+#endif
     }
     else if( !detectorType.compare( "SURF" ) ) {
       /* fd = new SurfFeatureDetector(200.0, 6, 5); */
@@ -301,12 +312,17 @@ FeatureDetector* createDetector( const string& detectorType )
         fd = new GoodFeaturesToTrackDetector( 200/*maxCorners*/, 0.001/*qualityLevel*/, 1./*minDistance*/,
                                               5/*int _blockSize*/, true/*useHarrisDetector*/, 0.04/*k*/ );
     }
-#if CV_MAJOR_VERSION > 2 || CV_MINOR_VERSION >= 3
     else if( !detectorType.compare( "ORB" ) ) {
+#if CV_MAJOR_VERSION > 2 || CV_MINOR_VERSION == 3
         fd = new OrbFeatureDetector(params->get<int>("max_keypoints")+1500,
                 ORB::CommonParams(1.2, ORB::CommonParams::DEFAULT_N_LEVELS, 31, ORB::CommonParams::DEFAULT_FIRST_LEVEL));
-    }
+#elif CV_MAJOR_VERSION > 2 || CV_MINOR_VERSION >= 4
+    else if( !detectorType.compare( "ORB" ) ) {
+        fd = new OrbFeatureDetector();
+#else
+      ROS_ERROR("ORB features are not implemented in your version of OpenCV");
 #endif
+    }
     else if( !detectorType.compare( "SIFTGPU" ) ) {
       ROS_INFO("%s is to be used", detectorType.c_str());
       ROS_DEBUG("Creating SURF detector as fallback.");

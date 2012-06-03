@@ -18,7 +18,7 @@
 //Documentation see header file
 #include "pcl/ros/conversions.h"
 #include <pcl/io/io.h>
-#include "pcl/common/transform.h"
+//#include "pcl/common/transform.h"
 #include "pcl_ros/transforms.h"
 #include "openni_listener.h"
 #include <cv_bridge/cv_bridge.h>
@@ -33,7 +33,7 @@
 #include "node.h"
 #include "misc.h"
 //#include <image_geometry/pinhole_camera_model.h>
-#include "pcl/ros/for_each_type.h"
+//#include "pcl/ros/for_each_type.h"
 
 //For rosbag reading
 #include <rosbag/view.h>

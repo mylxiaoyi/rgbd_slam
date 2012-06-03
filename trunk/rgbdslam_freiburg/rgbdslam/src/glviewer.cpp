@@ -20,6 +20,8 @@
 #include <QtOpenGL>
 #include <QThread>
 #include <GL/gl.h>
+#include <GL/glut.h>
+#include "boost/foreach.hpp"
 #include <cmath>
 #include <gl2ps.h>
 #include "glviewer.h"
