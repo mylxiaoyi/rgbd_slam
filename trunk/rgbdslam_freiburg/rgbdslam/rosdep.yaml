@@ -10,6 +10,6 @@ suitesparse:
 gsl-dev:
   ubuntu:
     libgsl0-dev
-gsl-dev:
+gl2ps:
   ubuntu:
     libgl2ps-dev
