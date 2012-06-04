@@ -141,12 +141,12 @@ void ParameterServer::checkValues() {
     if (get<string>("matcher_type").compare("SIFTGPU") == 0
             && get<bool>("concurrent_node_construction") == true) {
         config["concurrent_node_construction"] = static_cast<bool>(false);
-        ROS_ERROR("Cannot use concurrent node construction with SiftGPU matcher! 'concurrent_node_construction' was set to false");
+        ROS_WARN("Cannot use concurrent node construction with SiftGPU matcher! 'concurrent_node_construction' was set to false. Everything should work fine, but the CPU-threading won't happen (because you are using the GPU instead).");
     }
 
     if (get<string>("matcher_type").compare("SIFTGPU") == 0
             && get<bool>("concurrent_edge_construction") == true) {
         config["concurrent_edge_construction"] = static_cast<bool>(false);
-        ROS_ERROR("Cannot use concurrent edge construction with SiftGPU matcher! 'concurrent_edge_construction' was set to false");
+        ROS_WARN("Cannot use concurrent edge construction with SiftGPU matcher! 'concurrent_edge_construction' was set to false. Everything should work fine, but the CPU-threading won't happen (because you are using the GPU instead).");
     }
 }

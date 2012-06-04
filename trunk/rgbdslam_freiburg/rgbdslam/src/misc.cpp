@@ -602,7 +602,7 @@ double errorFunction2(const Eigen::Vector4f& x1,
   Eigen::Matrix3d cov2 = Eigen::Matrix3d::Zero();
   cov2(0,0) = 1 * raster_cov_x* mu_2(2); //how big is 1px std dev in meter, depends on depth
   cov2(1,1) = 1 * raster_cov_y* mu_2(2); //how big is 1px std dev in meter, depends on depth
-  cov1(2,2) = mu_2(2)*mu_2(2) * 0.0075; //stddev computed from information on http://www.ros.org/wiki/openni_kinect/kinect_accuracy
+  cov2(2,2) = mu_2(2)*mu_2(2) * 0.0075; //stddev computed from information on http://www.ros.org/wiki/openni_kinect/kinect_accuracy
 
   Eigen::Matrix3d cov1_in_frame_2 = rotation_mat.transpose() * cov1 * rotation_mat;//Works since the cov is diagonal => Eig-Vec-Matrix is Identity
 
