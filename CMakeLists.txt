@@ -9,6 +9,9 @@ set(ENV{SIFT_GPU_CUDA_PATH}	/usr/local/cuda)
 	
 set(USE_GICP_BIN		0)
 set(USE_GICP_CODE		1)
+IF ("${ROS_PARALLEL_JOBS}" EQUAL "")
+  set(ROS_PARALLEL_JOBS 1)
+endif ("${ROS_PARALLEL_JOBS}" EQUAL "")
 #########################################################
 #########################################################
 #########################################################
@@ -89,7 +92,7 @@ IF (${USE_SIFT_GPU})
 	MESSAGE("\n------------------------------------------------------------------\n")
 	MESSAGE("Compiling SiftGPU...")
 	EXECUTE_PROCESS(
-		COMMAND make siftgpu
+		COMMAND make ${ROS_PARALLEL_JOBS} siftgpu 
 		WORKING_DIRECTORY ${sift_gpu_build_path}
 		RESULT_VARIABLE sift_gpu_return
 	)
@@ -117,7 +120,7 @@ IF (${USE_GICP})
   MESSAGE("\n------------------------------------------------------------------\n")
 	MESSAGE("Compiling GICP...")
 	EXECUTE_PROCESS(
-	    COMMAND make linux-g++
+	    COMMAND make ${ROS_PARALLEL_JOBS} linux-g++
 	    WORKING_DIRECTORY ${gicp_build_path}
 	    RESULT_VARIABLE gicp_return
     )
@@ -147,8 +150,19 @@ ENDIF (${USE_GICP_CODE})
 find_package(OpenCV)
 include_directories(${OpenCV_INCLUDE_DIRS} external/)
 
+#############################
+# Eigen ####################
+#############################
+find_package(Eigen)
+IF(Eigen_FOUND)
+  include_directories(${EIGEN_INCLUDE_DIRS})
+  add_definitions(${EIGEN_DEFINITIONS})
+ELSE(Eigen_FOUND)
+  MESSAGE("Eigen package was not found. This is OK FOR ROS ELECTRIC, bad for fuerte\n")
+ENDIF(Eigen_FOUND)
+
 ##############################################################################
-# Sections
+# Some QT Magic (MOC Creation)
 ##############################################################################
 
 file(GLOB QT_FORMS RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} ui/*.ui)
@@ -160,7 +174,7 @@ QT4_WRAP_UI(QT_FORMS_HPP ${QT_FORMS})
 QT4_WRAP_CPP(QT_MOC_HPP ${QT_MOC})  
 
 ##############################################################################
-# Sources
+# Sources to Compile
 ##############################################################################
 SET(ADDITIONAL_SOURCES src/gicp-fallback.cpp src/main.cpp src/qtros.cpp  src/openni_listener.cpp src/qt_gui.cpp src/flow.cpp src/node.cpp src/graph_manager.cpp src/glviewer.cpp src/parameter_server.cpp src/ros_service_ui.cpp src/misc.cpp)
 
