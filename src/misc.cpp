@@ -317,7 +317,6 @@ FeatureDetector* createDetector( const string& detectorType )
         fd = new OrbFeatureDetector(params->get<int>("max_keypoints")+1500,
                 ORB::CommonParams(1.2, ORB::CommonParams::DEFAULT_N_LEVELS, 31, ORB::CommonParams::DEFAULT_FIRST_LEVEL));
 #elif CV_MAJOR_VERSION > 2 || CV_MINOR_VERSION >= 4
-    else if( !detectorType.compare( "ORB" ) ) {
         fd = new OrbFeatureDetector();
 #else
       ROS_ERROR("ORB features are not implemented in your version of OpenCV");
