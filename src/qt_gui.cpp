@@ -26,6 +26,7 @@
 #include <QPixmap>
 #include <QFont>
 #include <QList>
+#include <QList>
 #include <QIcon>
 #include <QKeySequence>
 #include "qt_gui.h"
@@ -35,11 +36,6 @@
 ///Constructs a QT GUI for easy control of RGBDSLAM
 Graphical_UI::Graphical_UI() : filename("quicksave.pcd"), glviewer(NULL)
 {
-    QWidget *widget = new QWidget;
-    setCentralWidget(widget);
-
-    //QWidget *topFiller = new QWidget;
-    //topFiller->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     infoText = new QString(tr(
                 "<p><b>RGBDSLAM</b> uses visual features to identify corresponding 3D locations "
                 "in RGBD data. The correspondences are used to reconstruct the camera motion. "
@@ -65,17 +61,21 @@ Graphical_UI::Graphical_UI() : filename("quicksave.pcd"), glviewer(NULL)
                 "    <li><i>Middle double click:</i> reset camera position.</li>"
                 "    <li><i>Double click on object:</i> set pivot to clicked point.</li>"
                 "    <li><i>Double click on background:</i> reset view to camera pose.</li><ul></p>")); feature_flow_image_label = new QLabel(*mouseHelpText);
+    // create widgets for image and map display
     feature_flow_image_label->setWordWrap(true);
-    feature_flow_image_label->setMargin(10);
     feature_flow_image_label->setFrameStyle(QFrame::StyledPanel | QFrame::Sunken);
+    if(ParameterServer::instance()->get<bool>("scalable_2d_display")) 
+      feature_flow_image_label->setScaledContents(true);
     visual_image_label = new QLabel("<i>Waiting for monochrome image...</i>");
     visual_image_label->setFrameStyle(QFrame::StyledPanel | QFrame::Sunken);
     visual_image_label->setAlignment(Qt::AlignCenter);
-    //visual_image_label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    if(ParameterServer::instance()->get<bool>("scalable_2d_display")) 
+      visual_image_label->setScaledContents(true);
     depth_image_label = new QLabel(tr("<i>Waiting for depth image...</i>"));
     depth_image_label->setFrameStyle(QFrame::StyledPanel | QFrame::Sunken);
     depth_image_label->setAlignment(Qt::AlignCenter);
-    //depth_image_label->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    if(ParameterServer::instance()->get<bool>("scalable_2d_display")) 
+      depth_image_label->setScaledContents(true);
     //transform_label = new QLabel(tr("<i>Waiting for transformation matrix...</i>"));
     //transform_label->setFrameStyle(QFrame::StyledPanel | QFrame::Sunken);
     //transform_label->setAlignment(Qt::AlignCenter);
@@ -85,19 +85,24 @@ Graphical_UI::Graphical_UI() : filename("quicksave.pcd"), glviewer(NULL)
     //typewriter_font.setStyleHint(QFont::TypeWriter);
     //transform_label->setFont(typewriter_font);
 
-    //QWidget *bottomFiller = new QWidget;
-    //bottomFiller->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
-
-    gridlayout = new QGridLayout;
-    gridlayout->setMargin(5);
-    //gridlayout->addWidget(infoLabel, 0,0);
-    //gridlayout->addWidget(transform_label, 0,0,1,0); //with rowspan
-    //gridlayout->addWidget(transform_label, 0,0);
-    if(ParameterServer::instance()->get<bool>("use_glwidget")) gridlayout->addWidget(glviewer, 0,0,1,0);
-    gridlayout->addWidget(visual_image_label, 1,0);
-    gridlayout->addWidget(depth_image_label, 1,1);
-    gridlayout->addWidget(feature_flow_image_label, 1,2);
-    widget->setLayout(gridlayout);
+    // setup the layout:
+    // use a splitter as main widget
+    vsplitter = new QSplitter(Qt::Vertical);
+    setCentralWidget(vsplitter);
+    // add glviewer as top item to splitter
+    if(ParameterServer::instance()->get<bool>("use_glwidget")) vsplitter->addWidget(glviewer);
+    // arrange image labels in horizontal layout
+    //QHBoxLayout* h_layout = new QHBoxLayout;
+    QSplitter* hsplitter = new QSplitter(Qt::Horizontal);
+    //h_layout->setSpacing(0);
+    //h_layout->setContentsMargins(0, 0, 0, 0);
+    hsplitter->addWidget(visual_image_label);
+    hsplitter->addWidget(depth_image_label);
+    hsplitter->addWidget(feature_flow_image_label);
+    //QWidget* bottom_widget = new QWidget;
+    //bottom_widget->setLayout(h_layout);
+    // add them to the splitter
+    vsplitter->addWidget(hsplitter);
 
     createMenus();
 
@@ -122,13 +127,16 @@ Graphical_UI::Graphical_UI() : filename("quicksave.pcd"), glviewer(NULL)
 }
 
 void Graphical_UI::setFeatureFlowImage(QImage qimage){
-  feature_flow_image_label->setAlignment(Qt::AlignCenter);
-  feature_flow_image_label->setPixmap(QPixmap::fromImage(qimage));
+  if(feature_flow_image_label->isVisible()){
+    feature_flow_image_label->setAlignment(Qt::AlignCenter);
+    feature_flow_image_label->setPixmap(QPixmap::fromImage(qimage));
+    feature_flow_image_label->repaint();
+  }
 }
 void Graphical_UI::setVisualImage(QImage qimage){
   if(visual_image_label->isVisible()){
-      visual_image_label->setPixmap(QPixmap::fromImage(qimage));
-      visual_image_label->repaint();
+    visual_image_label->setPixmap(QPixmap::fromImage(qimage));
+    visual_image_label->repaint();
   }
 }
 
@@ -328,10 +336,18 @@ void Graphical_UI::set2DStream(bool is_on) {
         visual_image_label->show();
         depth_image_label->show(); 
         feature_flow_image_label->show(); 
+        QList<int> list;
+        list.append(1);//upper part on
+        list.append(1);//lower part on
+        vsplitter->setSizes(list);
     } else { 
         visual_image_label->hide(); 
         depth_image_label->hide(); 
         feature_flow_image_label->hide(); 
+        QList<int> list;
+        list.append(1);//upper part on
+        list.append(0);//lower part off
+        vsplitter->setSizes(list);
     } 
 }
 

@@ -99,7 +99,7 @@ OpenNIListener::OpenNIListener(ros::NodeHandle nh, GraphManager* graph_mgr)
     } 
 
     //All information from stereo                                               
-    if(!widec_tpc.empty() && !widec_tpc.empty())
+    if(!widec_tpc.empty() && !widev_tpc.empty())
     {   
       visua_sub_ = new image_sub_type(nh, widev_tpc, q);
       cloud_sub_ = new pc_sub_type(nh, widec_tpc, q);

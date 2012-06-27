@@ -713,7 +713,7 @@ void GraphManager::visualizeFeatureFlow3D(unsigned int marker_id, bool draw_outl
         const g2o::VertexSE3* newer_v; //used to get the transform
         VertexIDMap v_idmap = optimizer_->vertices();
         // end of initialization
-        ROS_DEBUG("Matches Visualization start: %lu Matches, %lu Inliers", last_matches_.size(), last_inlier_matches_.size());
+        ROS_DEBUG("Matches Visualization start: %zu Matches, %zu Inliers", last_matches_.size(), last_inlier_matches_.size());
 
         // write all inital matches to the line_list
         marker_lines.points.clear();//necessary?
