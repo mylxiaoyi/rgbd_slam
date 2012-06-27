@@ -72,6 +72,7 @@
     <param name="config/use_glwidget"                  value="true"/><!-- 3D visualization needs performance -->
     <param name="config/use_gui"                       value="true"/><!-- No visualization, e.g., on robot -->
     <param name="config/show_axis"                     value="true"/>    <!-- do/don't visualize the pose graph in glwidget-->
+    <param name="config/scalable_2d_display"           value="false"/>   <!-- do/don't scale input displays. Consumes more cpu if set true-->
 
     <!-- Misc -->
     <param name="config/concurrent_node_construction"  value="true"/><!-- detect+extract features for new frame, while current frame is inserted into graph -->

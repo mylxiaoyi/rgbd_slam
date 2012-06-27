@@ -36,6 +36,7 @@ class QActionGroup;
 class QLabel;
 class QMenu;
 class GLViewer;
+class QSplitter;
 
 //TODO:
 //Choice between Binary and ASCII outputfiles
@@ -120,6 +121,7 @@ private:
     QString *mouseHelpText;
     QString *infoText;
     QString *licenseText;
+    QSplitter* vsplitter;
     QLabel *infoLabel;
     QLabel *infoLabel2;
     QLabel *tmpLabel;

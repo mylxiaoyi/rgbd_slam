@@ -99,6 +99,7 @@ void ParameterServer::defaultConfig() {
     config["visualization_skip_step"]       = static_cast<int> (1);                          // draw only every nth pointcloud row and line, high values require higher squared_meshing_threshold 
     config["squared_meshing_threshold"]     = static_cast<double> (0.0009);                  // don't triangulate over depth jumps. Should be increased with increasing visualization_skip_step
     config["show_axis"]                     = static_cast<bool> (true);                      // do/don't visualize the pose graph in glwidget
+    config["scalable_2d_display"]           = static_cast<bool> (false);                     // whether the input images are expanded. Consumes CPU time
 
     // Misc 
     config["start_paused"]                  = static_cast<bool> (true);
