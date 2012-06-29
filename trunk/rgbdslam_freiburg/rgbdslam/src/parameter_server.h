@@ -74,8 +74,22 @@ public:
         return boost::any_cast<T>(value);
     }
 
+    /*!
+     * Returns the description text for the named option
+     */
+    std::string getDescription(std::string param_name);
+
+    /*!
+     * Provides access to the raw config data
+     */
+    std::map<std::string, boost::any>& getConfigData(){
+      return config;
+    }
+
 private:
+    void addOption(std::string name, boost::any value, std::string description);
     std::map<std::string, boost::any> config;
+    std::map<std::string, std::string> descriptions;
 
     static ParameterServer* _instance;
     std::string pre;
@@ -93,7 +107,6 @@ private:
      * Will be called in the constructor
      */
     void getValues();
-
     /*!
      * Loads the default configuration
      */

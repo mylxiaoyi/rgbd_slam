@@ -667,6 +667,13 @@ void Graphical_UI::createMenus() {
     //Help Menu
     helpMenu = menuBar()->addMenu(tr("&Help"));
 
+    QAction *optionAct = new QAction(tr("&View Options"), this);
+    optionAct->setShortcut(QString("?"));
+    optionAct->setStatusTip(tr("Show the currently active options"));
+    connect(optionAct, SIGNAL(triggered()), this, SLOT(showOptions()));
+    helpMenu->addAction(optionAct);
+    this->addAction(optionAct);
+
     QAction *helpAct = new QAction(tr("&Usage Help"), this);
     helpAct->setShortcuts(QKeySequence::HelpContents);
     helpAct->setStatusTip(tr("Show usage information"));
@@ -688,3 +695,61 @@ void Graphical_UI::createMenus() {
 GLViewer* Graphical_UI::getGLViewer() { 
   return glviewer; 
 }
+
+void Graphical_UI::showOptions(){
+  QScrollArea* scrollarea = new QScrollArea();
+  QWidget* scrollarea_content = new QWidget(scrollarea);
+  scrollarea_content->setMinimumWidth(500);
+  QFormLayout *formLayout = new QFormLayout(scrollarea_content);
+  formLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+  formLayout->setLabelAlignment(Qt::AlignLeft);
+  formLayout->setVerticalSpacing(10);
+
+  QLabel* intro = new QLabel("This is an read-only view of the current settings. To modify RGBDSLAM's settings use the ROS parameter server functionality (i.e. set options either in a launch-file or as a command line parameter).");
+  intro->setWordWrap(true);
+  formLayout->addRow(intro);
+
+
+  std::map<std::string, boost::any>&  config = ParameterServer::instance()->getConfigData();
+  std::map<std::string, boost::any>::const_iterator itr;
+  for (itr = config.begin(); itr != config.end(); ++itr) {
+    QString name(itr->first.c_str());
+    QString description(ParameterServer::instance()->getDescription(itr->first).c_str());
+    QLabel* desc = new QLabel("<b>"+name+"</b><br/>"+description+"<br/><br/>");
+    desc->setWordWrap(true);
+    desc->setToolTip(description);
+    
+    if (itr->second.type() == typeid(std::string)) {
+      QLineEdit* editbox = new QLineEdit(QString(boost::any_cast<std::string>(itr->second).c_str()), scrollarea_content);
+      editbox->setToolTip(description);
+      editbox->setReadOnly(true);
+      formLayout->addRow(desc, editbox);
+    } else if (itr->second.type() == typeid(int)) {
+      QSpinBox* isbox = new QSpinBox();
+      isbox->setMaximum(1e9);
+      isbox->setValue(boost::any_cast<int>(itr->second));
+      isbox->setToolTip(description);
+      isbox->setReadOnly(true);
+      formLayout->addRow(desc, isbox);
+    } else if (itr->second.type() == typeid(double)) {
+      QDoubleSpinBox* dsbox = new QDoubleSpinBox();
+      dsbox->setMaximum(1e9);
+      dsbox->setValue(boost::any_cast<double>(itr->second));
+      dsbox->setToolTip(description);
+      dsbox->setReadOnly(true);
+      formLayout->addRow(desc, dsbox);
+    } else if (itr->second.type() == typeid(bool)) {
+      QCheckBox* checkbox = new QCheckBox("", scrollarea_content);
+      checkbox->setChecked(boost::any_cast<bool>(itr->second));
+      checkbox->setToolTip(description);
+      formLayout->addRow(desc, checkbox);
+    }
+  }
+  scrollarea_content->setLayout(formLayout);
+  scrollarea->setWidget(scrollarea_content);
+  scrollarea->setMinimumWidth(560);
+  scrollarea->show();
+  scrollarea->raise();
+  scrollarea->activateWindow();
+}
+
