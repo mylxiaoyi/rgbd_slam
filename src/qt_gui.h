@@ -83,6 +83,7 @@ public Q_SLOTS:
     void setFeatureFlowImage(QImage);
     void setDepthImage(QImage);
     void sendFinished(); ///< Call to display, that sending finished
+    void showOptions();
 
 private Q_SLOTS:
     void saveVectorGraphic();
