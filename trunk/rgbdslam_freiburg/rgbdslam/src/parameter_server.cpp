@@ -25,7 +25,6 @@ ParameterServer::ParameterServer() {
 
     defaultConfig();
     getValues();
-    checkValues();
 }
 
 ParameterServer* ParameterServer::instance() {
@@ -69,8 +68,8 @@ void ParameterServer::defaultConfig() {
     addOption("fixed_camera",                  static_cast<bool> (true),                  "is camera fixed relative to base?");
 
     // Visual Features, to activate GPU-based features see CMakeLists.txt 
-    addOption("feature_detector_type",         std::string("SURF"),                       "SURF, SIFT, FAST, ... see misc.cpp");
-    addOption("feature_extractor_type",        std::string("SURF"),                       "SURF or SIFT");
+    addOption("feature_detector_type",         std::string("SURF"),                       "SURF, SIFT or ORB");
+    addOption("feature_extractor_type",        std::string("SURF"),                       "SURF, SIFT or ORB");
     addOption("matcher_type",                  std::string("FLANN"),                      "SIFTGPU or FLANN or BRUTEFORCE");
     addOption("max_keypoints",                 static_cast<int> (2000),                   "Extract no more than this many keypoints ");
     addOption("min_keypoints",                 static_cast<int> (500),                    "Extract no less than this many keypoints ");
@@ -147,6 +146,7 @@ void ParameterServer::getValues() {
             ROS_DEBUG_STREAM("Value for " << name << ":             " << boost::any_cast<bool>(itr->second));
         }
     }
+    checkValues();
 }
 
 void ParameterServer::checkValues() {

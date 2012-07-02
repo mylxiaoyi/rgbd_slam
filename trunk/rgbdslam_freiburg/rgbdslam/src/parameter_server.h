@@ -86,6 +86,12 @@ public:
       return config;
     }
 
+    /*!
+     * Receives all values from the parameter server and store them
+     * in the map 'config'.
+     * Will be called in the constructor
+     */
+    void getValues();
 private:
     void addOption(std::string name, boost::any value, std::string description);
     std::map<std::string, boost::any> config;
@@ -101,12 +107,6 @@ private:
      */
     ParameterServer();
 
-    /*!
-     * Receives all values from the parameter server and store them
-     * in the map 'config'.
-     * Will be called in the constructor
-     */
-    void getValues();
     /*!
      * Loads the default configuration
      */

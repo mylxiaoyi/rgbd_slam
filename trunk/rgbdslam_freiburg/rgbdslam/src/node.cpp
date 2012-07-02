@@ -438,11 +438,17 @@ unsigned int Node::featureMatching(const Node* other, std::vector<cv::DMatch>* m
     double max_dist_ratio_fac = ps->get<double>("nn_distance_ratio");
     //if ((int)bruteForceMatches.size() < min_kp) max_dist_ratio_fac = 1.0; //if necessary use possibly bad descriptors
     srand((long)std::clock());
-    for (unsigned int i = 0; i < bruteForceMatches.size(); i++) {
+    std::set<int> train_indices;
+    for(unsigned int i = 0; i < bruteForceMatches.size(); i++) {
         cv::DMatch m1 = bruteForceMatches[i][0];
         cv::DMatch m2 = bruteForceMatches[i][1];
         float dist_ratio_fac = m1.distance / m2.distance;
         if (dist_ratio_fac < max_dist_ratio_fac) {//this check seems crucial to matching quality
+            int train_idx = m1.trainIdx;
+            if(train_indices.count(train_idx) > 0)
+              continue; //FIXME: Keep better
+              
+            train_indices.insert(train_idx);
             sum_distances += m1.distance;
             m1.distance = dist_ratio_fac + (float)rand()/(1000.0*RAND_MAX); //add a small random offset to the distance, since later the dmatches are inserted to a set, which omits duplicates and the duplicates are found via the less-than function, which works on the distance. Therefore we need to avoid equal distances, which happens very often for ORB
             matches->push_back(m1);
@@ -486,13 +492,19 @@ unsigned int Node::featureMatching(const Node* other, std::vector<cv::DMatch>* m
       cv::DMatch match;
       double avg_ratio = 0.0;
       double max_dist_ratio_fac = ps->get<double>("nn_distance_ratio");
-      for (int i = 0; i < indices.rows; ++i) {
+      std::set<int> train_indices;
+      for(int i = 0; i < indices.rows; ++i) {
         float dist_ratio_fac =  static_cast<float>(dists_ptr[2 * i]) / static_cast<float>(dists_ptr[2 * i + 1]);
         avg_ratio += dist_ratio_fac;
         //if (indices.rows < min_kp) dist_ratio_fac = 1.0; //if necessary use possibly bad descriptors
         if (max_dist_ratio_fac > dist_ratio_fac) {
+          int train_idx = indices_ptr[2 * i];
+          if(train_indices.count(train_idx) > 0)
+            continue; //FIXME: Keep better
+            
+          train_indices.insert(train_idx);
           match.queryIdx = i;
-          match.trainIdx = indices_ptr[2 * i];
+          match.trainIdx = train_idx;
           match.distance = dist_ratio_fac; //dists_ptr[2 * i];
           sum_distances += match.distance;
 
