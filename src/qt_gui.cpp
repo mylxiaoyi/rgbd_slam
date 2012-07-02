@@ -147,6 +147,12 @@ void Graphical_UI::setDepthImage(QImage qimage){
   }
 }
 
+void Graphical_UI::reloadConfig() {
+    ParameterServer::instance()->getValues();
+    QString message = tr("Configuration Reloaded");
+    statusBar()->showMessage(message);
+}
+
 void Graphical_UI::resetCmd() {
     Q_EMIT reset();
     if(ParameterServer::instance()->get<bool>("use_glwidget")) glviewer->reset();
@@ -365,6 +371,7 @@ void Graphical_UI::createMenus() {
     QMenu *graphMenu;
     QMenu *actionMenu;
     QMenu *viewMenu;
+    QMenu *settingsMenu;
     QMenu *helpMenu;
 
     //Graph Menu
@@ -664,15 +671,26 @@ void Graphical_UI::createMenus() {
     }
 
 
+    //Processing Menu
+    settingsMenu = menuBar()->addMenu(tr("&Settings"));
+
+    QAction *reloadAct;
+    reloadAct = new QAction(tr("&Reload Config"), this);
+    reloadAct->setStatusTip(tr("Reload Configuration from Parameter Server."));
+    reloadAct->setIcon(QIcon::fromTheme("reload"));//doesn't work (for gnome
+    connect(reloadAct, SIGNAL(triggered()), this, SLOT(reloadConfig()));
+    settingsMenu->addAction(reloadAct);
+    this->addAction(reloadAct);
+
+    QAction *optionAct = new QAction(tr("&View Current Settings"), this);
+    optionAct->setShortcut(QString("?"));
+    optionAct->setStatusTip(tr("Display the currently active options"));
+    connect(optionAct, SIGNAL(triggered()), this, SLOT(showOptions()));
+    settingsMenu->addAction(optionAct);
+    this->addAction(optionAct);
+
     //Help Menu
     helpMenu = menuBar()->addMenu(tr("&Help"));
-
-    QAction *optionAct = new QAction(tr("&View Options"), this);
-    optionAct->setShortcut(QString("?"));
-    optionAct->setStatusTip(tr("Show the currently active options"));
-    connect(optionAct, SIGNAL(triggered()), this, SLOT(showOptions()));
-    helpMenu->addAction(optionAct);
-    this->addAction(optionAct);
 
     QAction *helpAct = new QAction(tr("&Usage Help"), this);
     helpAct->setShortcuts(QKeySequence::HelpContents);

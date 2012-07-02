@@ -88,6 +88,7 @@ public Q_SLOTS:
 private Q_SLOTS:
     void saveVectorGraphic();
     void resetCmd();
+    void reloadConfig();
     void sendAll();
     void setMax();
     void setStereoShift();
