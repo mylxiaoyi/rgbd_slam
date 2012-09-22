@@ -23,7 +23,9 @@
 #include <GL/glut.h>
 #include "boost/foreach.hpp"
 #include <cmath>
+#ifdef GL2PS
 #include <gl2ps.h>
+#endif
 #include "glviewer.h"
 
 #ifndef GL_MULTISAMPLE
@@ -658,6 +660,8 @@ void GLViewer::toggleTriangulation() {
 }
 
 void GLViewer::drawToPS(QString filname){
+#ifdef GL2PS
+
   FILE *fp = fopen("glviewer.pdf", "wb");
   GLint buffsize = 0, state = GL2PS_OVERFLOW;
   GLint viewport[4];
@@ -679,5 +683,7 @@ void GLViewer::drawToPS(QString filname){
   }
   setlocale(LC_NUMERIC, oldlocale);
   fclose(fp);
+#else
+  QMessageBox::warning(this, tr("This functionality is not supported."), tr("This feature needs to be compiled in. To do so, install libgl2ps-dev and set the USE_GL2PS flag at the top of CMakeLists.txt. The feature has been removed to ease the installation process, sorry for the inconvenience."));
+#endif
 }
-

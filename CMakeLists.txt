@@ -9,6 +9,7 @@ set(ENV{SIFT_GPU_CUDA_PATH}	/usr/local/cuda)
 	
 set(USE_GICP_BIN		0)
 set(USE_GICP_CODE		1)
+set(USE_GL2PS       0) #For printing the 3D Window to PostScript - requires installation of additional library: libgl2ps-dev
 IF ("${ROS_PARALLEL_JOBS}" EQUAL "")
   set(ROS_PARALLEL_JOBS 1)
 endif ("${ROS_PARALLEL_JOBS}" EQUAL "")
@@ -53,6 +54,8 @@ rosbuild_gensrv()
 #rosbuild_link_boost(${PROJECT_NAME} thread)
 #rosbuild_add_executable(example examples/example.cpp)
 
+find_package(g2o REQUIRED)
+include_directories(/usr/include/suitesparse)
 
 ##############################################################################
 # Required 3rd party
@@ -192,12 +195,14 @@ rosbuild_add_executable(rgbdslam ${QT_SOURCES} ${QT_RESOURCES_CPP} ${QT_FORMS_HP
 #set libs
 SET(G2O_LIBS cholmod g2o_core g2o_stuff g2o_types_slam3d g2o_solver_cholmod g2o_solver_pcg g2o_solver_csparse cxsparse g2o_incremental)
 #SET(LIBS_LINK GL GLU -lgl2ps ${G2O_LIBS} ${QT_LIBRARIES} ${QT_QTOPENGL_LIBRARY} ${GLUT_LIBRARY} ${OPENGL_LIBRARY} ${OpenCV_LIBS})
-SET(LIBS_LINK GL GLU -lgl2ps ${G2O_LIBS} ${QT_LIBRARIES} ${QT_QTOPENGL_LIBRARY} ${GLUT_LIBRARY} ${OPENGL_LIBRARY} ${OpenCV_LIBS} -lboost_signals)
+SET(LIBS_LINK GL GLU ${G2O_LIBS} ${QT_LIBRARIES} ${QT_QTOPENGL_LIBRARY} ${GLUT_LIBRARY} ${OPENGL_LIBRARY} ${OpenCV_LIBS} -lboost_signals)
 
 IF (${USE_SIFT_GPU})
  	SET(LIBS_LINK ${LIBS_LINK} siftgpu)
 ENDIF (${USE_SIFT_GPU})
-
+IF (${USE_GL2PS})
+ 	SET(LIBS_LINK ${LIBS_LINK} -lgl2ps)
+ENDIF (${USE_GL2PS})
 IF (${USE_GICP})
  	SET(LIBS_LINK ${LIBS_LINK} gicp ANN gsl gslcblas)
 ENDIF (${USE_GICP})
