@@ -54,7 +54,7 @@ rosbuild_gensrv()
 #rosbuild_link_boost(${PROJECT_NAME} thread)
 #rosbuild_add_executable(example examples/example.cpp)
 
-find_package(g2o REQUIRED)
+#find_package(g2o REQUIRED)
 include_directories(/usr/include/suitesparse)
 
 ##############################################################################
