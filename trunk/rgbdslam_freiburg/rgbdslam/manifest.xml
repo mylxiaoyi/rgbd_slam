@@ -9,7 +9,6 @@
   <url>http://ros.org/wiki/rgbdslam</url>
   <depend package="tf"/>
   <depend package="pcl"/>
-  <depend package="g2o"/>
   <depend package="rospy"/>
   <depend package="roscpp"/>
   <depend package="rosbag"/>
@@ -29,6 +28,7 @@
   <rosdep name="libgsl"/>
   <!--rosdep name="gl2ps"/-->
   <rosdep name="eigen"/>
+  <rosdep name="libg2o"/>
   <export>
     <rosdoc config="rosdoc.yaml" />
     <nodelet plugin="${prefix}/nodelet_plugins.xml" />
