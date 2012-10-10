@@ -17,8 +17,8 @@
   <depend package="cv_bridge"/>
   <depend package="sensor_msgs"/>
   <!--depend package="openni_camera"/-->
-  <depend package="octomap_server"/>
-  <depend package="octomap"/>
+  <!--depend package="octomap_server"/-->
+  <!--depend package="octomap"/-->
   <depend package="geometry_msgs"/>
   <depend package="visualization_msgs"/>
   <rosdep name="libqt4-opengl-dev"/>

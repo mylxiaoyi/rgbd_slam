@@ -112,7 +112,7 @@ OpenNIListener::OpenNIListener(ros::NodeHandle nh, GraphManager* graph_mgr)
     extractor_ = createDescriptorExtractor(params->get<std::string>("feature_extractor_type"));
 
     if(params->get<bool>("concurrent_node_construction")){
-      ROS_INFO("Threads used by QThreadPool on this Computer %i. Will increase this by one, b/c the QtRos Thread is very lightweight", QThread::idealThreadCount());
+      ROS_DEBUG("Threads used by QThreadPool on this Computer %i. Will increase this by one, b/c the QtRos Thread is very lightweight", QThread::idealThreadCount());
       QThreadPool::globalInstance()->setMaxThreadCount(QThread::idealThreadCount()*2+2);
     }
 
@@ -139,7 +139,7 @@ OpenNIListener::OpenNIListener(ros::NodeHandle nh, GraphManager* graph_mgr)
     QtConcurrent::run(this, &OpenNIListener::loadBag, bagfile_name);
 
     if(params->get<bool>("concurrent_node_construction")){
-      ROS_INFO("Threads used by QThreadPool on this Computer %i. Will increase this by two, b/c the QtRos and loadBag threads are lightweight", QThread::idealThreadCount());
+      ROS_DEBUG("Threads used by QThreadPool on this Computer %i. Will increase this by two, b/c the QtRos and loadBag threads are lightweight", QThread::idealThreadCount());
       QThreadPool::globalInstance()->setMaxThreadCount(QThread::idealThreadCount()+2);
     }
   }
