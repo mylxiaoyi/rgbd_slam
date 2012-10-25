@@ -64,7 +64,7 @@ void ParameterServer::defaultConfig() {
     addOption("fixed_frame_name",              std::string("/map"),                       "The computed camera transforms are with respect to this frame. It is set to the identity for the first frame processed or, if ground truth is available, to the ground truth of the first frame");
     addOption("odom_frame_name",               std::string("/odom"),                      "A fixed frame estimation from somewhere else (e.g. odometry, laser-based mapping). Doesn't need to correspond to the pose of the fixed_frame_name");
     addOption("ground_truth_frame_name",       std::string(""),                           "use empty string if no ground truth tf frame available");
-    addOption("base_frame_name",               std::string("/openni_camera"),             "if the camera is articulated use robot base");
+    addOption("base_frame_name",               std::string("/camera_link"),               "if the camera is articulated use robot base");
     addOption("fixed_camera",                  static_cast<bool> (true),                  "is camera fixed relative to base?");
 
     // Visual Features, to activate GPU-based features see CMakeLists.txt 
