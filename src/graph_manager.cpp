@@ -33,6 +33,7 @@
 #include <fstream>
 #include <limits>
 #include <boost/foreach.hpp>
+#include <pcl_ros/point_cloud.h>
 
 #include "g2o/math_groups/se3quat.h"
 #include "g2o/types/slam3d/edge_se3_quat.h"
@@ -72,10 +73,10 @@ GraphManager::GraphManager(ros::NodeHandle nh) :
   ParameterServer* ps = ParameterServer::instance();
   createOptimizer(ps->get<std::string>("backend_solver"));
 
-  batch_cloud_pub_ = nh.advertise<sensor_msgs::PointCloud2>(ps->get<std::string>("individual_cloud_out_topic"),
-                                                            ps->get<int>("publisher_queue_size"));
-  whole_cloud_pub_ = nh.advertise<sensor_msgs::PointCloud2>(ps->get<std::string>("aggregate_cloud_out_topic"),
-                                                            ps->get<int>("publisher_queue_size"));
+  batch_cloud_pub_ = nh.advertise<pointcloud_type>(ps->get<std::string>("individual_cloud_out_topic"),
+                                                   ps->get<int>("publisher_queue_size"));
+  whole_cloud_pub_ = nh.advertise<pointcloud_type>(ps->get<std::string>("aggregate_cloud_out_topic"),
+                                                   ps->get<int>("publisher_queue_size"));
   ransac_marker_pub_ = nh.advertise<visualization_msgs::Marker>("/rgbdslam/correspondence_marker", 
                                                                 ps->get<int>("publisher_queue_size"));
   marker_pub_ = nh.advertise<visualization_msgs::Marker>("/rgbdslam/pose_graph_markers",
@@ -685,7 +686,7 @@ void GraphManager::visualizeFeatureFlow3D(unsigned int marker_id, bool draw_outl
 
         visualization_msgs::Marker marker_lines;
 
-        marker_lines.header.frame_id = "/openni_rgb_optical_frame";
+        marker_lines.header.frame_id = "/camera_rgb_optical_frame";
         marker_lines.ns = "ransac_markers";
         marker_lines.header.stamp = ros::Time::now();
         marker_lines.action = visualization_msgs::Marker::ADD;
@@ -772,7 +773,7 @@ void GraphManager::visualizeGraphEdges() const {
 
     if (marker_pub_.getNumSubscribers() > 0){ //no visualization for nobody
         visualization_msgs::Marker edges_marker;
-        edges_marker.header.frame_id = "/openni_rgb_optical_frame"; //TODO: Should be a meaningfull fixed frame with known relative pose to the camera
+        edges_marker.header.frame_id = "/camera_rgb_optical_frame"; //TODO: Should be a meaningfull fixed frame with known relative pose to the camera
         edges_marker.header.stamp = ros::Time::now();
         edges_marker.ns = "camera_pose_graph"; // Set the namespace and id for this marker.  This serves to create a unique ID
         edges_marker.id = 0;    // Any marker sent with the same namespace and id will overwrite the old one
@@ -828,7 +829,7 @@ void GraphManager::visualizeGraphNodes() const {
 
     if (marker_pub_.getNumSubscribers() > 0){ //don't visualize, if nobody's looking
         visualization_msgs::Marker nodes_marker;
-        nodes_marker.header.frame_id = "/openni_rgb_optical_frame"; //TODO: Should be a meaningfull fixed frame with known relative pose to the camera
+        nodes_marker.header.frame_id = "/camera_rgb_optical_frame"; //TODO: Should be a meaningfull fixed frame with known relative pose to the camera
         nodes_marker.header.stamp = ros::Time::now();
         nodes_marker.ns = "camera_pose_graph"; // Set the namespace and id for this marker.  This serves to create a unique ID
         nodes_marker.id = 1;    // Any marker sent with the same namespace and id will overwrite the old one
@@ -1290,9 +1291,8 @@ void GraphManager::saveAllCloudsToFile(QString filename){
     //fill message
     //rgbdslam::CloudTransforms msg;
     QString message;
-    tf::Transform cam2rgb;
-    cam2rgb.setRotation(tf::createQuaternionFromRPY(-1.57,0,-1.57));
-    cam2rgb.setOrigin(tf::Point(0,-0.04,0));
+    //As everything is relative to the first frame: Just use its transform to get things to base frame
+    tf::StampedTransform base2points = graph_[0]->getBase2PointsTransform();
     for (unsigned int i = 0; i < optimizer_->vertices().size(); ++i) {
         g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(i));
         if(!v){ 
@@ -1300,14 +1300,16 @@ void GraphManager::saveAllCloudsToFile(QString filename){
             continue;
         }
         tf::Transform transform = g2o2TF(v->estimate());
-        world2cam = cam2rgb*transform;
+        world2cam = base2points*transform;
         transformAndAppendPointCloud (*(graph_[i]->pc_col), aggregate_cloud, world2cam, Max_Depth);
 
         if(ParameterServer::instance()->get<bool>("batch_processing"))
           graph_[i]->clearPointCloud(); //saving all is the last thing to do, so these are not required anymore
         Q_EMIT setGUIStatus(message.sprintf("Saving to %s: Transformed Node %i/%i", qPrintable(filename), i, (int)optimizer_->vertices().size()));
     }
-    aggregate_cloud.header.frame_id = "/openni_camera";
+    //Set base frame id
+    aggregate_cloud.header.frame_id = base2points.frame_id_;
+
     if(filename.endsWith(".ply", Qt::CaseInsensitive))
       pointCloud2MeshFile(filename, aggregate_cloud);
     if(filename.endsWith(".pcd", Qt::CaseInsensitive))
@@ -1321,11 +1323,8 @@ void GraphManager::saveAllCloudsToFile(QString filename){
     ROS_INFO ("Saved %d data points to %s", (int)aggregate_cloud.points.size(), qPrintable(filename));
 
     if (whole_cloud_pub_.getNumSubscribers() > 0){ //if it should also be send out
-        sensor_msgs::PointCloud2 cloudMessage_; //this will be send out in batch mode
-        pcl::toROSMsg(aggregate_cloud,cloudMessage_);
-        cloudMessage_.header.frame_id = "/openni_camera";
-        cloudMessage_.header.stamp = ros::Time::now();
-        whole_cloud_pub_.publish(cloudMessage_);
+        aggregate_cloud.header.stamp = ros::Time::now();//Avoid problems with tf cache size if mapping started long ago. Assumption: Base frame hasn't moved
+        whole_cloud_pub_.publish(aggregate_cloud);
         ROS_INFO("Aggregate pointcloud sent");
     }
     batch_processing_runs_ = false;
@@ -1473,7 +1472,7 @@ void GraphManager::sendAllCloudsImpl(){
             continue;
         }
 
-        tf::Transform base2points = graph_[i]->getBase2PointsTransform();//get pose of base w.r.t current pc at capture time
+        tf::StampedTransform base2points = graph_[i]->getBase2PointsTransform();//get pose of base w.r.t current pc at capture time
         printTransform("base2points", base2points);
         tf::Transform computed_motion = g2o2TF(v->estimate());//get pose of point cloud w.r.t. first frame's pc
         printTransform("computed_motion", computed_motion);
@@ -1488,11 +1487,11 @@ void GraphManager::sendAllCloudsImpl(){
         ROS_DEBUG("Sending out transform %i", i);
         printTransform("World->Base", world2base);
         std::string fixed_frame = ParameterServer::instance()->get<std::string>("fixed_frame_name");
-        br_.sendTransform(tf::StampedTransform(world2base, now, fixed_frame, "/openni_camera"));
+        br_.sendTransform(tf::StampedTransform(world2base, now, fixed_frame, base2points.frame_id_));
         br_.sendTransform(tf::StampedTransform(err, now, fixed_frame, "/where_mocap_should_be"));
         ROS_DEBUG("Sending out cloud %i", i);
         //graph_[i]->publish("/batch_transform", now, batch_cloud_pub_);
-        graph_[i]->publish("/openni_rgb_optical_frame", now, batch_cloud_pub_);
+        graph_[i]->publish(now, batch_cloud_pub_);
         //tf::Transform ground_truth_tf = graph_[i]->getGroundTruthTransform();
         QString message;
         Q_EMIT setGUIInfo(message.sprintf("Sending pointcloud and map transform (%i/%i) on topics %s and /tf", (int)i+1, (int)optimizer_->vertices().size(), ParameterServer::instance()->get<std::string>("individual_cloud_out_topic").c_str()) );

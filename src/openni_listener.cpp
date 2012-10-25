@@ -722,8 +722,8 @@ void OpenNIListener::retrieveTransformations(std_msgs::Header depth_header, Node
   }
   catch (tf::TransformException ex){
     ROS_WARN("%s",ex.what());
-    ROS_WARN("Using Standard kinect /openni_camera -> /openni_rgb_optical_frame as transformation");
-    //emulate the transformation from kinect openni_camera frame to openni_rgb_optical_frame
+    ROS_WARN("Using Standard kinect /camera_link -> /openni_rgb_optical_frame as transformation");
+    //emulate the transformation from kinect camera_link frame to camera_rgb_optical_frame
     base2points.setRotation(tf::createQuaternionFromRPY(-1.57,0,-1.57));
     base2points.setOrigin(tf::Point(0,-0.04,0));
     base2points.stamp_ = depth_time;
@@ -735,8 +735,8 @@ void OpenNIListener::retrieveTransformations(std_msgs::Header depth_header, Node
     //set as origin. the rest will be used to compare
     tf::StampedTransform ground_truth_transform;
     try{
-      tflistener_->waitForTransform(gt_frame, "/openni_camera", depth_time, ros::Duration(0.1));
-      tflistener_->lookupTransform(gt_frame, "/openni_camera", depth_time, ground_truth_transform);
+      tflistener_->waitForTransform(gt_frame, "/openni_camera", depth_time, ros::Duration(0.1));//Tailored to the ground truth of the RGB-D Benchmark
+      tflistener_->lookupTransform(gt_frame, "/openni_camera", depth_time, ground_truth_transform);//Tailored to the ground truth of the RGB-D Benchmark
       ground_truth_transform.stamp_ = depth_time;
       tf::StampedTransform b2p;
       //HACK to comply with Jürgen Sturm's Ground truth, though I can't manage here to get the full transform from tf
@@ -746,7 +746,7 @@ void OpenNIListener::retrieveTransformations(std_msgs::Header depth_header, Node
     }
     catch (tf::TransformException ex){
       ROS_WARN("%s - Using Identity for Ground Truth",ex.what());
-      ground_truth_transform = tf::StampedTransform(tf::Transform::getIdentity(), depth_time, "missing_ground_truth", "/openni_camera");
+      ground_truth_transform = tf::StampedTransform(tf::Transform::getIdentity(), depth_time, "missing_ground_truth", "/openni_camera");//Tailored to the ground truth of the RGB-D Benchmark
     }
     printTransform("Ground Truth", ground_truth_transform);
     node_ptr->setGroundTruthTransform(ground_truth_transform);

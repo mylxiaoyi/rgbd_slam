@@ -113,7 +113,7 @@ public:
 	
 
 	///Send own pointcloud with given frame, publisher and timestamp
-	void publish(const char* frame, ros::Time timestamp, ros::Publisher pub);
+	void publish(ros::Time timestamp, ros::Publisher pub);
 
 	void buildFlannIndex();
   //!Fills "matches" and returns ratio of "good" features 

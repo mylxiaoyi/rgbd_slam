@@ -20,6 +20,7 @@
 #include <ctime>
 #include <Eigen/Geometry>
 #include "pcl/ros/conversions.h"
+#include <pcl_ros/point_cloud.h>
 #include <pcl/common/transformation_from_correspondences.h>
 //#include <opencv2/highgui/highgui.hpp>
 #include <qtconcurrentrun.h>
@@ -247,13 +248,18 @@ tf::StampedTransform Node::getBase2PointsTransform(){
     return base2points_;
 }
 
-void Node::publish(const char* frame, ros::Time timestamp, ros::Publisher pub){
+void Node::publish(ros::Time timestamp, ros::Publisher pub){
+  /*
     sensor_msgs::PointCloud2 cloudMessage;
     pcl::toROSMsg((*pc_col),cloudMessage);
+    ROS_INFO_STREAM("Headers: " << pc_col->header.frame_id << " " << cloudMessage.header.frame_id);
     cloudMessage.header.frame_id = frame;
     cloudMessage.header.stamp = timestamp;
     pub.publish(cloudMessage);
-    ROS_INFO("Pointcloud with id %i sent with frame %s", id_, frame);
+    */
+  pc_col->header.stamp = timestamp; //to sync with tf
+  pub.publish(pc_col);
+  ROS_INFO("Pointcloud with id %i sent with frame %s", id_, pc_col->header.frame_id.c_str());
 }
 
 #ifdef USE_ICP_CODE
