@@ -46,8 +46,8 @@
     <param name="config/feature_extractor_type"        value="SURF"/><!-- If SIFTGPU is enabled in CMakeLists.txt, use SURF here -->
     <param name="config/matcher_type"                  value="FLANN"/> <!-- FLANN (not avail for ORB features), SIFTGPU (only for SIFTGPU detector)  or BRUTEFORCE-->
     <param name="config/nn_distance_ratio"             value="0.6"/> <!-- Feature correspondence is valid if distance to nearest neighbour is smaller than this parameter times the distance to the 2nd neighbour -->
-    <param name="config/max_keypoints"                 value="1000"/><!-- Extract no more than this many keypoints (not honored by SIFTGPU)-->
-    <param name="config/min_keypoints"                 value="600"/><!-- Extract no less than this many ... -->
+    <param name="config/max_keypoints"                 value="700"/><!-- Extract no more than this many keypoints (not honored by SIFTGPU)-->
+    <param name="config/min_keypoints"                 value="100"/><!-- Extract no less than this many ... -->
   	<param name="config/adjuster_max_iterations"       value="3"/>
 
     <!-- Algortithm settings -->
@@ -65,23 +65,27 @@
     <param name="config/optimizer_skip_step"           value="1"/><!-- optimize every n-th frame. Set high for offline operation -->
     <param name="config/use_icp"                       value="false"/> <!-- Ignored if ICP is not compiled in (see top of CMakeLists.txt) -->
     <param name="config/backend_solver"                value="cholmod"/> <!-- Which solver to use in g2o for matrix inversion: "csparse" , "cholmod" or "pcg"  -->
+    <param name="config/optimize_landmarks"            value="false"/> <!-- Include feature poses as vertices in graph optimization-->
 
     <!-- Visualization Settings -->
     <param name="config/squared_meshing_threshold"     value="0.0009"/><!-- don't triangulate over depth jumps -->
     <param name="config/visualization_skip_step"       value="1"/> <!-- draw only every nth pointcloud row and line, high values require higher squared_meshing_threshold -->
+    <param name="config/visualize_mono_depth_overlay"  value="false"/> <!-- Show Depth and Monochrome image as overlay in featureflow -->
     <param name="config/use_glwidget"                  value="true"/><!-- 3D visualization needs performance -->
     <param name="config/use_gui"                       value="true"/><!-- No visualization, e.g., on robot -->
     <param name="config/show_axis"                     value="true"/>    <!-- do/don't visualize the pose graph in glwidget-->
     <param name="config/scalable_2d_display"           value="false"/>   <!-- do/don't scale input displays. Consumes more cpu if set true-->
 
     <!-- Misc -->
-    <param name="config/concurrent_node_construction"  value="true"/><!-- detect+extract features for new frame, while current frame is inserted into graph -->
-    <param name="config/concurrent_edge_construction"  value="true"/><!-- compare current frame to many predecessors in parallel, might not work with SIFTGPU matcher (but SIFTGPU detector and extractor is ok) -->
+    <param name="config/concurrent_node_construction"  value="true"/> <!-- detect+extract features for new frame, while current frame is inserted into graph -->
+    <param name="config/concurrent_edge_construction"  value="true"/> <!-- compare current frame to many predecessors in parallel, might not work with SIFTGPU matcher (but SIFTGPU detector and extractor is ok) -->
+    <param name="config/concurrent_optimization"       value="true"/> <!-- Do graph optimization in a seperate thread -->
     <param name="config/voxelfilter_size"              value="-1.0"/> <!-- in meter voxefilter displayed and stored pointclouds, incompatible with use_glwidget=true. Set negative to disable-->
   	<param name="config/preserve_raster_on_save"       value="false"/>
     <param name="config/min_time_reported"             value="0.01"/><!-- for easy runtime analysis -->
   	<param name="config/start_paused"                  value="true"/>
     <param name="config/batch_processing"              value="false"/>    <!--store results and close after bagfile has been processed-->
     <param name="config/keep_all_nodes"                value="false"/> <!-- add nodes with constant motion if no transformation can be found -->
+    <param name="config/keep_good_nodes"               value="true"/> <!-- add nodes with constant motion if no transformation can be found but minimal number of keypoints were found -->
   </node>
 </launch>
