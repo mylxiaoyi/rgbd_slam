@@ -1,9 +1,25 @@
 <launch>
   <include file="$(find openni_camera)/launch/openni_node.launch"/>
-  <node pkg="rgbdslam" type="rgbdslam" name="rgbdslam" cwd="node" required="false" output="screen" >
+  <arg name="debug" default="false"/>
+  <!-- Several possibilities to debug (uncomment only one)-->
+  <arg if="$(arg debug)" name="launch_prefix" value="/usr/bin/xterm -rv -e gdb -ex run -args"/>
+  <!--arg if="$(arg debug)" name="launch_prefix" value="/usr/bin/valgrind -DELeTEME-tool=cachegrind -DELETEME-cachegrind-out-file=/tmp/cachegrind.out"/-->
+  <!--arg if="$(arg debug)" name="launch_prefix" value="/usr/bin/valgrind -DELETEME-leak-check=full "/-->
+  <arg unless="$(arg debug)" name="launch_prefix" value=""/>
+
+  <node pkg="rgbdslam" type="rgbdslam" name="rgbdslam" cwd="node" required="true" output="screen"  launch-prefix="$(arg launch_prefix)"> 
     <!-- see rgbslam_sample_config.launch for all available parameters and their default values -->
     <param name="config/topic_image_mono"              value="/camera/rgb/image_color"/> <!--could also be color -->
   	<param name="config/topic_image_depth"             value="/camera/depth/image"/>
+    <param name="config/feature_detector_type"         value="SIFTGPU"/><!-- If SIFTGPU is enabled in CMakeLists.txt, use SURF here -->
+    <param name="config/feature_extractor_type"        value="SIFTGPU"/><!-- If SIFTGPU is enabled in CMakeLists.txt, use SURF here -->
+    <param name="config/matcher_type"                  value="FLANN"/> <!-- FLANN (not avail for ORB features), SIFTGPU (only for SIFTGPU detector)  or BRUTEFORCE-->
+    <param name="config/max_keypoints"                 value="700"/><!-- Extract no more than this many keypoints (not honored by SIFTGPU)-->
+    <param name="config/min_keypoints"                 value="300"/><!-- Extract no less than this many ... -->
+    <param name="config/nn_distance_ratio"             value="0.8"/> <!-- Feature correspondence is valid if distance to nearest neighbour is smaller than this parameter times the distance to the 2nd neighbour -->
+    <param name="config/optimizer_iterations"          value="100"/><!-- maximum of iterations in online operation (i.e., does not affect the final optimization in batch mode) -->
+    <param name="config/octomap_resolution"            value="0.01"/>
+    <param name="config/voxelfilter_size"              value="0.005"/> <!-- in meter voxefilter displayed and stored pointclouds, incompatible with use_glwidget=true. Set negative to disable-->
  </node>
   <!--node pkg="rviz" type="rviz" name="rviz" args="-d $(find rgbdslam)/launch/rviz_config.vcg" respawn="false" output="log" > </node-->
   <!--node pkg="rxtools" type="rxconsole" name="rxconsole" output="log" > </node-->

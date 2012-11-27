@@ -8,8 +8,8 @@
       <param name="config/feature_detector_type"         value="SIFTGPU"/><!-- If SIFTGPU is enabled in CMakeLists.txt, use SURF here -->
       <param name="config/feature_extractor_type"        value="SIFTGPU"/><!-- If SIFTGPU is enabled in CMakeLists.txt, use SURF here -->
       <param name="config/matcher_type"                  value="SIFTGPU"/> <!-- FLANN (not avail for ORB features), SIFTGPU (only for SIFTGPU detector)  or BRUTEFORCE-->
-      <param name="config/max_keypoints"                 value="2000"/><!-- Extract no more than this many keypoints (not honored by SIFTGPU)-->
-      <param name="config/min_keypoints"                 value="1600"/><!-- Extract no less than this many ... -->
+      <param name="config/max_keypoints"                 value="700"/><!-- Extract no more than this many keypoints (not honored by SIFTGPU)-->
+      <param name="config/min_keypoints"                 value="100"/><!-- Extract no less than this many ... -->
       <param name="config/optimizer_skip_step"           value="1"/><!-- optimize every n-th frame -->
       <param name="config/store_pointclouds"             value="false"/> <!-- if, e.g., only trajectory is required, setting this to false saves lots of memory -->
       <param name="config/individual_cloud_out_topic"    value="/rgbdslam/batch_clouds"/>;
