@@ -1002,7 +1002,7 @@ bool Node::getRelativeTransformationTo(const Node* earlier_node,
     best_inlier_coarse = inlier.size();
     best_error_coarse = inlier_error;
     //Totally superior?
-    if (inlier.size() > best_inlier && inlier_error < best_inlier) {
+    if (inlier.size() > best_inlier && inlier_error < best_error) {
       best_inlier = inlier.size();
       best_error = inlier_error;
     }
@@ -1041,7 +1041,7 @@ bool Node::getRelativeTransformationTo(const Node* earlier_node,
       continue;
     }
     //Totally superior?
-    if (inlier.size() > best_inlier && new_inlier_error < best_inlier) {
+    if (inlier.size() > best_inlier && new_inlier_error < best_error) {
       best_inlier = inlier.size();
       best_error = inlier_error;
       resulting_transformation = transformation;
