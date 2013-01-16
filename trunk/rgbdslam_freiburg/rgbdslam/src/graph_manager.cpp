@@ -35,13 +35,14 @@
 #include <boost/foreach.hpp>
 #include <pcl_ros/point_cloud.h>
 
-#include "g2o/math_groups/se3quat.h"
-#include "g2o/types/slam3d/edge_se3_quat.h"
+#include "g2o/types/slam3d/se3quat.h"
+#include "g2o/types/slam3d/edge_se3.h"
 
 #include "g2o/core/block_solver.h"
 #include "g2o/solvers/csparse/linear_solver_csparse.h"
 #include "g2o/solvers/cholmod/linear_solver_cholmod.h"
 #include "g2o/solvers/pcg/linear_solver_pcg.h"
+#include "g2o/core/optimization_algorithm_dogleg.h"
 
 //typedef g2o::BlockSolver< g2o::BlockSolverTraits<-1, -1> >  SlamBlockSolver;
 typedef g2o::BlockSolver< g2o::BlockSolverTraits<6, 3> >  SlamBlockSolver;
@@ -107,18 +108,18 @@ void GraphManager::createOptimizer(std::string backend, g2o::SparseOptimizer* op
   if(backend == "cholmod" || backend == "auto"){
     SlamLinearCholmodSolver* linearSolver = new SlamLinearCholmodSolver();
     linearSolver->setBlockOrdering(false);
-    solver = new SlamBlockSolver(optimizer_, linearSolver);
+    solver = new SlamBlockSolver(linearSolver);
     current_backend_ = "cholmod";
   }
   else if(backend == "csparse"){
     SlamLinearCSparseSolver* linearSolver = new SlamLinearCSparseSolver();
     linearSolver->setBlockOrdering(false);
-    solver = new SlamBlockSolver(optimizer_, linearSolver);
+    solver = new SlamBlockSolver(linearSolver);
     current_backend_ = "csparse";
   }
   else if(backend == "pcg"){
     SlamLinearPCGSolver* linearSolver = new SlamLinearPCGSolver();
-    solver = new SlamBlockSolver(optimizer_, linearSolver);
+    solver = new SlamBlockSolver(linearSolver);
     current_backend_ = "pcg";
   }
   else {
@@ -126,10 +127,12 @@ void GraphManager::createOptimizer(std::string backend, g2o::SparseOptimizer* op
     ROS_INFO("Falling Back to Cholmod Solver");
     SlamLinearCholmodSolver* linearSolver = new SlamLinearCholmodSolver();
     linearSolver->setBlockOrdering(false);
-    solver = new SlamBlockSolver(optimizer_, linearSolver);
+    solver = new SlamBlockSolver(linearSolver);
     current_backend_ = "cholmod";
   }
-  optimizer_->setSolver(solver);
+
+  g2o::OptimizationAlgorithmDogleg * algo = new g2o::OptimizationAlgorithmDogleg(solver);
+  optimizer_->setAlgorithm(algo);
 }
 
 //WARNING: Dangerous
@@ -477,7 +480,7 @@ bool GraphManager::addNode(Node* new_node) {
         //Send the current pose via tf nevertheless
         tf::Transform incremental = g2o2TF(mr.edge.mean);
         g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(prev_frame->id_));
-        tf::Transform previous = g2o2TF(v->estimate());
+        tf::Transform previous = g2o2TF(v->estimateAsSE3Quat());
         tf::Transform combined = previous*incremental;
         broadcastTransform(new_node, combined);
         process_node_runs_ = false;
@@ -734,10 +737,10 @@ void GraphManager::visualizeFeatureFlow3D(unsigned int marker_id, bool draw_outl
 
                 Node* last = graph_.find(graph_.size()-1)->second;
                 marker_lines.points.push_back(
-                        pointInWorldFrame(last->feature_locations_3d_[newer_id], newer_v->estimate()));
+                        pointInWorldFrame(last->feature_locations_3d_[newer_id], newer_v->estimateAsSE3Quat()));
                 Node* prev = graph_.find(last_matching_node_)->second;
                 marker_lines.points.push_back(
-                        pointInWorldFrame(prev->feature_locations_3d_[earlier_id], earlier_v->estimate()));
+                        pointInWorldFrame(prev->feature_locations_3d_[earlier_id], earlier_v->estimateAsSE3Quat()));
             }
         }
 
@@ -755,10 +758,10 @@ void GraphManager::visualizeFeatureFlow3D(unsigned int marker_id, bool draw_outl
 
             Node* last = graph_.find(graph_.size()-1)->second;
             marker_lines.points.push_back(
-                    pointInWorldFrame(last->feature_locations_3d_[newer_id], newer_v->estimate()));
+                    pointInWorldFrame(last->feature_locations_3d_[newer_id], newer_v->estimateAsSE3Quat()));
             Node* prev = graph_.find(last_matching_node_)->second;
             marker_lines.points.push_back(
-                    pointInWorldFrame(prev->feature_locations_3d_[earlier_id], earlier_v->estimate()));
+                    pointInWorldFrame(prev->feature_locations_3d_[earlier_id], earlier_v->estimateAsSE3Quat()));
         }
 
         ransac_marker_pub_.publish(marker_lines);
@@ -947,24 +950,25 @@ bool GraphManager::addEdgeToG2O(const LoadedEdge3D& edge, bool largeEdge, bool s
         v1->setId(edge.id1);
         v1->setEstimate(v2->estimate() * edge.mean.inverse());
         optimizer_->addVertex(v1); 
-        latest_transform_ = g2o2QMatrix(v1->estimate()); 
+        latest_transform_ = g2o2QMatrix(v1->estimateAsSE3Quat()); 
     }
     else if (!v2 && v1) {
         v2 = new g2o::VertexSE3;
         assert(v2);
         v2->setId(edge.id2);
-        v2->setEstimate(v1->estimate() * edge.mean);
+        v2->setEstimate(v1->estimateAsSE3Quat() * edge.mean);
         optimizer_->addVertex(v2); 
-        latest_transform_ = g2o2QMatrix(v2->estimate()); 
+        latest_transform_ = g2o2QMatrix(v2->estimateAsSE3Quat()); 
     }
     else if(set_estimate){
-        v2->setEstimate(v1->estimate() * edge.mean);
+        v2->setEstimate(v1->estimateAsSE3Quat() * edge.mean);
     }
     g2o::EdgeSE3* g2o_edge = new g2o::EdgeSE3;
     g2o_edge->vertices()[0] = v1;
     g2o_edge->vertices()[1] = v2;
-    g2o_edge->setMeasurement(edge.mean);
-    g2o_edge->setInverseMeasurement(edge.mean.inverse());
+    //g2o_edge->setMeasurement(edge.mean);
+    g2o::SE3Quat edgeMean(edge.mean); //SHOULD BE FIXED in g2o
+    g2o_edge->setMeasurement(edgeMean);
     g2o_edge->setInformation(edge.informationMatrix);
     optimizer_->addEdge(g2o_edge);
 
@@ -1028,8 +1032,8 @@ void GraphManager::optimizeGraphImpl(int max_iter)
 
   g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(optimizer_->vertices().size()-1));
 
-  computed_motion_ =  g2o2TF(v->estimate());
-  latest_transform_ = g2o2QMatrix(v->estimate()); 
+  computed_motion_ =  g2o2TF(v->estimateAsSE3Quat());
+  latest_transform_ = g2o2QMatrix(v->estimateAsSE3Quat()); 
   Q_EMIT setGraphEdges(getGraphEdges());
   Q_EMIT updateTransforms(getAllPosesAsMatrixList());
 
@@ -1126,7 +1130,7 @@ QList<QMatrix4x4>* GraphManager::getAllPosesAsMatrixList(){
     for (unsigned int i = 0; i < optimizer_->vertices().size(); ++i) {
         g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(i));
         if(v){ 
-            current_poses_.push_back(g2o2QMatrix(v->estimate())); 
+            current_poses_.push_back(g2o2QMatrix(v->estimateAsSE3Quat())); 
         } else {
             ROS_ERROR("Nullpointer in graph at position %i!", i);
         }
@@ -1183,7 +1187,7 @@ void GraphManager::saveIndividualCloudsToFile(QString file_basename)
         cam2rgb.setOrigin(tf::Point(0,-0.04,0));
         world2base = cam2rgb*transform;
         */
-        tf::Transform pose = g2o2TF(v->estimate());
+        tf::Transform pose = g2o2TF(v->estimateAsSE3Quat());
         tf::StampedTransform base2points = graph_[i]->getBase2PointsTransform();//get pose of base w.r.t current pc at capture time
         world2base = init_base_pose_*base2points*pose*base2points.inverse();
 
@@ -1248,7 +1252,7 @@ void GraphManager::saveAllFeaturesToFile(QString filename)
     int feat_count = 0;
     for (unsigned int i = 0; i < optimizer_->vertices().size(); ++i) {
         g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(i));
-        tf::Transform world2cam = g2o2TF(v->estimate());
+        tf::Transform world2cam = g2o2TF(v->estimateAsSE3Quat());
         world2rgb = cam2rgb*world2cam;
         Eigen::Matrix4f world2rgbMat;
         pcl_ros::transformAsMatrix(world2rgb, world2rgbMat);
@@ -1299,7 +1303,7 @@ void GraphManager::saveAllCloudsToFile(QString filename){
             ROS_ERROR("Nullpointer in graph at position %i!", i);
             continue;
         }
-        tf::Transform transform = g2o2TF(v->estimate());
+        tf::Transform transform = g2o2TF(v->estimateAsSE3Quat());
         world2cam = base2points*transform;
         transformAndAppendPointCloud (*(graph_[i]->pc_col), aggregate_cloud, world2cam, Max_Depth);
 
@@ -1397,7 +1401,7 @@ void GraphManager::saveTrajectory(QString filebasename, bool with_ground_truth){
         g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(i));
         ROS_ERROR_COND(!v, "Nullpointer in graph at position %i!", i);
 
-        tf::Transform pose = g2o2TF(v->estimate());
+        tf::Transform pose = g2o2TF(v->estimateAsSE3Quat());
 
         tf::StampedTransform base2points = graph_[i]->getBase2PointsTransform();//get pose of base w.r.t current pc at capture time
         tf::Transform world2base = init_base_pose_*base2points*pose*base2points.inverse();
@@ -1474,7 +1478,7 @@ void GraphManager::sendAllCloudsImpl(){
 
         tf::StampedTransform base2points = graph_[i]->getBase2PointsTransform();//get pose of base w.r.t current pc at capture time
         printTransform("base2points", base2points);
-        tf::Transform computed_motion = g2o2TF(v->estimate());//get pose of point cloud w.r.t. first frame's pc
+        tf::Transform computed_motion = g2o2TF(v->estimateAsSE3Quat());//get pose of point cloud w.r.t. first frame's pc
         printTransform("computed_motion", computed_motion);
         printTransform("init_base_pose_", init_base_pose_);
 

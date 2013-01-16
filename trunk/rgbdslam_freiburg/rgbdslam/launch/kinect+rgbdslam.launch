@@ -1,5 +1,5 @@
 <launch>
-  <include file="$(find openni_camera)/launch/openni_node.launch"/>
+  <include file="$(find openni_launch)/launch/openni.launch"/>
   <arg name="debug" default="false"/>
   <!-- Several possibilities to debug (uncomment only one)-->
   <arg if="$(arg debug)" name="launch_prefix" value="/usr/bin/xterm -rv -e gdb -ex run -args"/>

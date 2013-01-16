@@ -48,7 +48,7 @@
 #include <memory> //for auto_ptr
 #include "parameter_server.h"
 
-#include "g2o/core/graph_optimizer_sparse.h"
+#include "g2o/core/sparse_optimizer.h"
 
 #include "g2o/core/hyper_dijkstra.h"
 
