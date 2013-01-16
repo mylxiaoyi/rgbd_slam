@@ -23,7 +23,7 @@
 #include "parameter_server.h"
 #include <cv.h>
 
-#include <g2o/math_groups/se3quat.h>
+#include <g2o/types/slam3d/se3quat.h>
 
 #include <pcl_ros/transforms.h>
 
@@ -55,7 +55,7 @@ void logTransform(QTextStream& out, const tf::Transform& t, double timestamp, co
 
 QMatrix4x4 g2o2QMatrix(const g2o::SE3Quat se3) {
     struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
-    Eigen::Matrix<double, 4, 4> m = se3.to_homogenious_matrix(); //_Matrix< 4, 4, double >
+    Eigen::Matrix<double, 4, 4> m = se3.to_homogeneous_matrix(); //_Matrix< 4, 4, double >
     ROS_DEBUG_STREAM("Eigen Matrix:\n" << m);
     QMatrix4x4 qmat( static_cast<qreal*>( m.data() )  );
     // g2o/Eigen seems to use a different row-major/column-major array layout
@@ -314,8 +314,8 @@ FeatureDetector* createDetector( const string& detectorType )
     }
     else if( !detectorType.compare( "ORB" ) ) {
 #if CV_MAJOR_VERSION > 2 || CV_MINOR_VERSION == 3
-        fd = new OrbFeatureDetector(params->get<int>("max_keypoints")+1500,
-                ORB::CommonParams(1.2, ORB::CommonParams::DEFAULT_N_LEVELS, 31, ORB::CommonParams::DEFAULT_FIRST_LEVEL));
+        fd = new OrbFeatureDetector(params->get<int>("max_keypoints"),
+                ORB::CommonParams(1.2, 8, 15, ORB::CommonParams::DEFAULT_FIRST_LEVEL, 2, ORB::HARRIS_SCORE, 15));
 #elif CV_MAJOR_VERSION > 2 || CV_MINOR_VERSION >= 4
         fd = new OrbFeatureDetector();
 #else
