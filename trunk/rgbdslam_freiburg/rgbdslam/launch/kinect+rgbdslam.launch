@@ -19,7 +19,6 @@
     <param name="config/nn_distance_ratio"             value="0.8"/> <!-- Feature correspondence is valid if distance to nearest neighbour is smaller than this parameter times the distance to the 2nd neighbour -->
     <param name="config/optimizer_iterations"          value="100"/><!-- maximum of iterations in online operation (i.e., does not affect the final optimization in batch mode) -->
     <param name="config/octomap_resolution"            value="0.01"/>
-    <param name="config/voxelfilter_size"              value="0.005"/> <!-- in meter voxefilter displayed and stored pointclouds, incompatible with use_glwidget=true. Set negative to disable-->
  </node>
   <!--node pkg="rviz" type="rviz" name="rviz" args="-d $(find rgbdslam)/launch/rviz_config.vcg" respawn="false" output="log" > </node-->
   <!--node pkg="rxtools" type="rxconsole" name="rxconsole" output="log" > </node-->
