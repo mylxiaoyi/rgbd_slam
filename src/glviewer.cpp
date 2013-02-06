@@ -23,10 +23,15 @@
 #include <GL/glut.h>
 #include "boost/foreach.hpp"
 #include <cmath>
+#include <QApplication>
+#include <QAction>
+#include <QMenu>
 #ifdef GL2PS
 #include <gl2ps.h>
 #endif
 #include "glviewer.h"
+#include "misc2.h"
+#include "scoped_timer.h"
 
 #ifndef GL_MULTISAMPLE
 #define GL_MULTISAMPLE  0x809D
@@ -36,7 +41,23 @@ const double PI= 3.14159265358979323846;
 
 template <typename PointType>
 inline bool validXYZ(const PointType& p){
-      return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z);
+      if(ParameterServer::instance()->get<double>("maximum_depth") < p.z) return false;
+      return std::isfinite(p.z) && std::isfinite(p.y) && std::isfinite(p.x);
+};
+
+template <typename PointType>
+inline void setGLColor(const PointType& p){
+    unsigned char b,g,r;
+#ifndef RGB_IS_4TH_DIM
+    b = *(  (unsigned char*)(&p.rgb));
+    g = *(1+(unsigned char*)(&p.rgb));
+    r = *(2+(unsigned char*)(&p.rgb));
+#else
+    b = *(  (unsigned char*)(&p.data[3]));
+    g = *(1+(unsigned char*)(&p.data[3]));
+    r = *(2+(unsigned char*)(&p.data[3]));
+#endif
+    glColor3ub(r,g,b); //glColor3f(1.0,1.0,1.0);
 };
 
 GLViewer::GLViewer(QWidget *parent)
@@ -49,19 +70,25 @@ GLViewer::GLViewer(QWidget *parent)
       zTra(-50),//go back 50 (pixels?)
       polygon_mode(GL_FILL),
       cloud_list_indices(),
-      edge_list_(NULL),
       cloud_matrices(new QList<QMatrix4x4>()),
       show_poses_(ParameterServer::instance()->get<bool>("show_axis")),
-      show_ids_(false), //more or less for debuging
+      show_ids_(false),
+      show_grid_(false), 
+      show_tfs_(false), 
       show_edges_(ParameterServer::instance()->get<bool>("show_axis")),
       show_clouds_(true),
+      show_features_(false),
       follow_mode_(true),
       stereo_(false),
+      black_background_(true),
       width_(0),
       height_(0),
       stereo_shift_(0.1),
       fov_(100.0/180.0*PI),
-      rotation_stepping_(1.0)
+      rotation_stepping_(1.0),
+      myparent(parent),
+      button_pressed_(false),
+      fast_rendering_step_(1)
 {
     bg_col_[0] = bg_col_[1] = bg_col_[2] = bg_col_[3] = 0.0;//black background
     ROS_DEBUG_COND(!this->format().stereo(), "Stereo not supported");
@@ -90,7 +117,7 @@ void GLViewer::setXRotation(int angle) {
     qNormalizeAngle(angle);
     if (angle != xRot) {
         xRot = angle;
-        updateGL();
+        clearAndUpdate();
     }
 }
 
@@ -99,7 +126,7 @@ void GLViewer::setYRotation(int angle) {
     qNormalizeAngle(angle);
     if (angle != yRot) {
         yRot = angle;
-        updateGL();
+        clearAndUpdate();
     }
 }
 
@@ -109,14 +136,14 @@ void GLViewer::setRotationGrid(double rot_step_in_degree) {
 
 void GLViewer::setStereoShift(double shift) {
   stereo_shift_ = shift;
-  updateGL();
+  clearAndUpdate();
 }
 
 void GLViewer::setZRotation(int angle) {
     qNormalizeAngle(angle);
     if (angle != zRot) {
         zRot = angle;
-        updateGL();
+        clearAndUpdate();
     }
 }
 
@@ -127,6 +154,7 @@ void GLViewer::initializeGL() {
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_CULL_FACE);
     glEnable(GL_LINE_SMOOTH);
+    //glEnable(GL_POINT_SMOOTH);
     //glShadeModel(GL_SMOOTH);
     //glEnable(GL_LIGHTING);
     //glEnable(GL_LIGHT0);
@@ -139,30 +167,59 @@ void GLViewer::initializeGL() {
 //assumes gl mode for triangles
 inline
 void GLViewer::drawTriangle(const point_type& p1, const point_type& p2, const point_type& p3){
-    unsigned char b,g,r;
-    b = *(  (unsigned char*)(&p1.rgb));
-    g = *(1+(unsigned char*)(&p1.rgb));
-    r = *(2+(unsigned char*)(&p1.rgb));
-    glColor3ub(r,g,b); //glColor3f(1.0,1.0,1.0);
-    glColor3ub(255,0,0); 
+    setGLColor(p1);
     glVertex3f(p1.x, p1.y, p1.z);
 
-    b = *(  (unsigned char*)(&p2.rgb));
-    g = *(1+(unsigned char*)(&p2.rgb));
-    r = *(2+(unsigned char*)(&p2.rgb));
-    glColor3ub(r,g,b); //glColor3f(1.0,1.0,1.0);
-    glColor3ub(0,255,0); 
+    setGLColor(p2);
     glVertex3f(p2.x, p2.y, p2.z);
 
-    b = *(  (unsigned char*)(&p3.rgb));
-    g = *(1+(unsigned char*)(&p3.rgb));
-    r = *(2+(unsigned char*)(&p3.rgb));
-    //glColor3ub(r,g,b); //glColor3f(1.0,1.0,1.0);
-    glColor3ub(0,0,255); 
+    setGLColor(p3);
     glVertex3f(p3.x, p3.y, p3.z);
 }
 
+void GLViewer::drawGrid(){
+    //glEnable (GL_LINE_STIPPLE);
+    //glLineStipple (1, 0x0F0F);
+    //glEnable(GL_BLEND); 
+    glBegin(GL_LINES);
+    glLineWidth(1);
+    ParameterServer* ps = ParameterServer::instance();
+    float scale = ps->get<double>("gl_cell_size");
+    //glColor4f(1-bg_col_[0],1-bg_col_[1],1-bg_col_[2],0.4); //invers of background, transp
+    glColor3f(0.5,0.5,0.5); //gray
+    int size = ps->get<int>("gl_grid_size_xy")/2;
+    for(int i = -size; i <= size ; i++){
+      //glColor4f(0.2,0.5,0.2,1.0); //green, the color of the y axis
+      glVertex3f(i*scale,  size*scale, 0);
+      glVertex3f(i*scale, -size*scale, 0);
+      //glColor4f(0.5,0.2,0.2,1.0); //red, the color of the x axis
+      glVertex3f( size*scale, i*scale, 0);
+      glVertex3f(-size*scale, i*scale, 0);
+    }
+    size = ps->get<int>("gl_grid_size_xz")/2;
+    for(int i = -size; i <= size ; i++){
+      //glColor4f(0.2,0.2,0.5,1.0); //blue, the color of the z axis
+      glVertex3f(i*scale, 0,  size*scale);
+      glVertex3f(i*scale, 0, -size*scale);
+      //glColor4f(0.5,0.2,0.2,1.0); //red, the color of the x axis
+      glVertex3f( size*scale, 0, i*scale);
+      glVertex3f(-size*scale, 0, i*scale);
+    }
+    size = ps->get<int>("gl_grid_size_yz")/2;
+    for(int i = -size; i <= size ; i++){
+      //glColor4f(0.2,0.2,0.5,1.0); //blue, the color of the z axis
+      glVertex3f(0, i*scale,  size*scale);
+      glVertex3f(0, i*scale, -size*scale);
+      //glColor4f(0.2,0.5,0.2,1.0); //green, the color of the y axis
+      glVertex3f(0,  size*scale, i*scale);
+      glVertex3f(0, -size*scale, i*scale);
+    }
+    glEnd();
+    //glDisable (GL_LINE_STIPPLE);
+}
+
 void GLViewer::drawAxis(float scale){
+    glEnable(GL_BLEND); 
     glBegin(GL_LINES);
     glLineWidth(4);
     glColor4f (0.9, 0, 0, 1.0);
@@ -184,6 +241,7 @@ void GLViewer::paintGL() {
     if(!this->isVisible()) return;
     //ROS_INFO("This is paint-thread %d", (unsigned int)QThread::currentThreadId());
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glPointSize(ParameterServer::instance()->get<double>("gl_point_size"));
     if(stereo_){
         float ratio = (float)(width_) / (float) height_;
         glViewport(0, 0, width_/2, height_);
@@ -203,10 +261,12 @@ void GLViewer::paintGL() {
 }
 
 void GLViewer::drawClouds(float xshift) {
+    ScopedTimer s(__FUNCTION__);
     if(follow_mode_){
         int id = cloud_matrices->size()-1;
         if(id >= 0)setViewPoint((*cloud_matrices)[id]);
     }
+    glDisable (GL_BLEND);  //Don't blend the clouds, they have no alpha values
     glLoadIdentity();
     //Camera transformation
     glTranslatef(xTra+xshift, yTra, zTra);
@@ -217,24 +277,43 @@ void GLViewer::drawClouds(float xshift) {
     glRotatef(y_steps*rotation_stepping_, 0.0, 1.0, 0.0);
     glRotatef(z_steps*rotation_stepping_, 0.0, 0.0, 1.0);
     glMultMatrixd(static_cast<GLdouble*>( viewpoint_tf_.data() ));//works as long as qreal and GLdouble are typedefs to double (might depend on hardware)
+    if(show_grid_) {
+      drawGrid(); //Draw a 10x10 grid with 1m x 1m cells
+    }
+    if(show_poses_) drawAxis(0.2);//Show origin as big axis
+
     ROS_DEBUG("Drawing %i PointClouds", cloud_list_indices.size());
-    for(int i = 0; i<cloud_list_indices.size() && i<cloud_matrices->size(); i++){
-        //GLdouble* entry = static_cast<GLdouble*>( cloud_matrices[i].data() );
-        //for(int j = 0; j < 16; j++, entry++){
-        //    ROS_INFO("Matrix[%d]: %f", j, *entry);
-        //}
+    int step = button_pressed_ ? fast_rendering_step_ : 1; //if last_draw_duration_ was bigger than 100hz, skip clouds in drawing when button pressed
+    for(int i = 0; i<cloud_list_indices.size() && i<cloud_matrices->size(); i+=step){
         glPushMatrix();
         glMultMatrixd(static_cast<GLdouble*>( (*cloud_matrices)[i].data() ));//works as long as qreal and GLdouble are typedefs to double (might depend on hardware)
         if(show_clouds_) glCallList(cloud_list_indices[i]);
-        if(show_poses_) drawAxis(0.075);
-        if(show_ids_) {
-          glColor4f(1-bg_col_[0],1-bg_col_[1],1-bg_col_[2],1.0); //inverse of bg color, but transp
-          this->renderText(0.,0.,0.,QString::number(i));
+        if(show_features_ && feature_list_indices.size()>i){
+          glCallList(feature_list_indices[i]);
         }
         glPopMatrix();
     }
-    if(show_poses_) drawAxis(0.2);//Show origin as big axis
+
+    glDisable(GL_DEPTH_TEST);
     if(show_edges_) drawEdges();
+
+    for(int i = 0; i<cloud_list_indices.size() && i<cloud_matrices->size(); i++){
+        glPushMatrix();
+        glMultMatrixd(static_cast<GLdouble*>( (*cloud_matrices)[i].data() ));//works as long as qreal and GLdouble are typedefs to double (might depend on hardware)
+        if(show_poses_) drawAxis((i + 1 == cloud_list_indices.size()) ? 0.5:0.075); //Draw last pose Big
+        if(show_ids_) {
+          glColor4f(1-bg_col_[0],1-bg_col_[1],1-bg_col_[2],1.0); //inverse of bg color
+          this->renderText(0.,0.,0.,QString::number(i), QFont("Monospace", 8));
+        }
+        glPopMatrix();
+    }
+    glEnable(GL_DEPTH_TEST);
+    if(button_pressed_){
+      if(s.elapsed() > 0.05) { //Try to maintain high speed rendering if button is pressed
+        fast_rendering_step_++;
+        ROS_INFO("Increased renderer skipto every %d. cloud during motion", fast_rendering_step_);
+      }
+    }
 }
 
 void GLViewer::resizeGL(int width, int height)
@@ -265,27 +344,34 @@ void GLViewer::mouseDoubleClickEvent(QMouseEvent *event) {
     xTra=0;
     yTra=0;
     if(cloud_matrices->size()>0){
-      if(!setClickedPosition(event->x(), event->y())){
-        if (event->buttons() & Qt::LeftButton) {
-          int id = cloud_matrices->size()-1;
-          setViewPoint((*cloud_matrices)[id]);
-        } else if (event->buttons() & Qt::RightButton) {
-          int id = 0;
-          setViewPoint((*cloud_matrices)[id]);
-        } else if (event->buttons() & Qt::MidButton) { 
-          viewpoint_tf_.setToIdentity();
+      int id = 0;
+      switch (QApplication::keyboardModifiers()){
+        case Qt::NoModifier:  
+            id = cloud_matrices->size()-1;
+        case Qt::ControlModifier:  
+            setViewPoint((*cloud_matrices)[id]);
+            break;
+        case Qt::ShiftModifier:  
+            viewpoint_tf_.setToIdentity();
+      }
+      if (event->buttons() & Qt::MidButton) { 
           zTra=-50;
-        }
       }
     }
-    updateGL();
+    /*
+    if(!setClickedPosition(event->x(), event->y())){
+      ROS_INFO("Clicked into space");
+    }
+    */
+    clearAndUpdate();
 }
 void GLViewer::toggleStereo(bool flag){
   stereo_ = flag;
   resizeGL(width_, height_);
-  updateGL();
+  clearAndUpdate();
 }
 void GLViewer::toggleBackgroundColor(bool flag){
+  black_background_ = flag;
   if(flag){
     bg_col_[0] = bg_col_[1] = bg_col_[2] = bg_col_[3] = 0.0;//black background
   }
@@ -293,71 +379,231 @@ void GLViewer::toggleBackgroundColor(bool flag){
     bg_col_[0] = bg_col_[1] = bg_col_[2] = 1.0;//white background
   }
   glClearColor(bg_col_[0],bg_col_[1],bg_col_[2],bg_col_[3]); 
-  updateGL();
+  clearAndUpdate();
+}
+void GLViewer::toggleShowFeatures(bool flag){
+  show_features_ = flag;
+  clearAndUpdate();
 }
 void GLViewer::toggleShowClouds(bool flag){
   show_clouds_ = flag;
-  updateGL();
+  clearAndUpdate();
+}
+void GLViewer::toggleShowTFs(bool flag){
+  show_tfs_ = flag;
+  clearAndUpdate();
+}
+void GLViewer::toggleShowGrid(bool flag){
+  show_grid_ = flag;
+  clearAndUpdate();
 }
 void GLViewer::toggleShowIDs(bool flag){
   show_ids_ = flag;
-  updateGL();
+  clearAndUpdate();
 }
 void GLViewer::toggleShowEdges(bool flag){
   show_edges_ = flag;
-  updateGL();
+  clearAndUpdate();
 }
 void GLViewer::toggleShowPoses(bool flag){
   show_poses_ = flag;
-  updateGL();
+  clearAndUpdate();
 }
 void GLViewer::toggleFollowMode(bool flag){
   follow_mode_ = flag;
 }
+
+/** Create context menu */
+void GLViewer::mouseReleaseEvent(QMouseEvent *event) {
+  button_pressed_ = false;
+  clearAndUpdate();
+
+  if(event->button() == Qt::RightButton)
+  {
+      QMenu menu;
+      QMenu* viewMenu = &menu; //ease copy and paste from qt_gui.cpp
+      GLViewer* glviewer = this;//ease copy and paste from qt_gui.cpp
+
+      QAction *toggleCloudDisplay = new QAction(tr("Show &Clouds"), this);
+      toggleCloudDisplay->setCheckable(true);
+      toggleCloudDisplay->setChecked(show_clouds_);
+      toggleCloudDisplay->setStatusTip(tr("Toggle whether point clouds should be rendered"));
+      connect(toggleCloudDisplay, SIGNAL(toggled(bool)), glviewer, SLOT(toggleShowClouds(bool)));
+      viewMenu->addAction(toggleCloudDisplay);
+
+      QAction *toggleShowPosesAct = new QAction(tr("Show &Poses of Graph"), this);
+      toggleShowPosesAct->setShortcut(QString("P"));
+      toggleShowPosesAct->setCheckable(true);
+      toggleShowPosesAct->setChecked(show_poses_);
+      toggleShowPosesAct->setStatusTip(tr("Display poses as axes"));
+      connect(toggleShowPosesAct, SIGNAL(toggled(bool)), glviewer, SLOT(toggleShowPoses(bool)));
+      viewMenu->addAction(toggleShowPosesAct);
+
+      QAction *toggleShowIDsAct = new QAction(tr("Show Pose IDs"), this);
+      toggleShowIDsAct->setShortcut(QString("I"));
+      toggleShowIDsAct->setCheckable(true);
+      toggleShowIDsAct->setChecked(show_ids_);
+      toggleShowIDsAct->setStatusTip(tr("Display pose ids at axes"));
+      connect(toggleShowIDsAct, SIGNAL(toggled(bool)), glviewer, SLOT(toggleShowIDs(bool)));
+      viewMenu->addAction(toggleShowIDsAct);
+
+      QAction *toggleShowEdgesAct = new QAction(tr("Show &Edges of Graph"), this);
+      toggleShowEdgesAct->setShortcut(QString("E"));
+      toggleShowEdgesAct->setCheckable(true);
+      toggleShowEdgesAct->setChecked(show_edges_);
+      toggleShowEdgesAct->setStatusTip(tr("Display edges of pose graph as lines"));
+      connect(toggleShowEdgesAct, SIGNAL(toggled(bool)), glviewer, SLOT(toggleShowEdges(bool)));
+      viewMenu->addAction(toggleShowEdgesAct);
+
+      QAction *toggleShowTFs = new QAction(tr("Show Pose TFs"), this);
+      toggleShowTFs->setCheckable(true);
+      toggleShowTFs->setChecked(show_tfs_);
+      toggleShowTFs->setStatusTip(tr("Display pose transformations at axes"));
+      connect(toggleShowTFs, SIGNAL(toggled(bool)), glviewer, SLOT(toggleShowTFs(bool)));
+      viewMenu->addAction(toggleShowTFs);
+
+      QAction *toggleShowFeatures = new QAction(tr("Show &Feature Locations"), this);
+      toggleShowFeatures->setCheckable(true);
+      toggleShowFeatures->setChecked(show_features_);
+      toggleShowFeatures->setStatusTip(tr("Toggle whether feature locations should be rendered"));
+      connect(toggleShowFeatures, SIGNAL(toggled(bool)), glviewer, SLOT(toggleShowFeatures(bool)));
+      viewMenu->addAction(toggleShowFeatures);
+
+      QAction *toggleTriangulationAct = new QAction(tr("&Toggle Triangulation"), this);
+      toggleTriangulationAct->setShortcut(QString("T"));
+      toggleTriangulationAct->setStatusTip(tr("Switch between surface, wireframe and point cloud"));
+      connect(toggleTriangulationAct, SIGNAL(triggered(bool)), glviewer, SLOT(toggleTriangulation()));
+      viewMenu->addAction(toggleTriangulationAct);
+
+      QAction *toggleFollowAct = new QAction(tr("Follow &Camera"), this);
+      toggleFollowAct->setShortcut(QString("Shift+F"));
+      toggleFollowAct->setCheckable(true);
+      toggleFollowAct->setChecked(follow_mode_);
+      toggleFollowAct->setStatusTip(tr("Always use viewpoint of last frame (except zoom)"));
+      connect(toggleFollowAct, SIGNAL(toggled(bool)), glviewer, SLOT(toggleFollowMode(bool)));
+      viewMenu->addAction(toggleFollowAct);
+
+      QAction *toggleShowGrid = new QAction(tr("Show Grid"), this);
+      toggleShowGrid->setCheckable(true);
+      toggleShowGrid->setChecked(show_grid_);
+      toggleShowGrid->setStatusTip(tr("Display XY plane grid"));
+      connect(toggleShowGrid, SIGNAL(toggled(bool)), glviewer, SLOT(toggleShowGrid(bool)));
+      viewMenu->addAction(toggleShowGrid);
+
+      QAction *toggleBGColor = new QAction(tr("Toggle Background"), this);
+      toggleBGColor->setShortcut(QString("B"));
+      toggleBGColor->setCheckable(true);
+      toggleBGColor->setChecked(black_background_);
+      toggleBGColor->setStatusTip(tr("Toggle whether background should be white or black"));
+      connect(toggleBGColor, SIGNAL(toggled(bool)), glviewer, SLOT(toggleBackgroundColor(bool)));
+      viewMenu->addAction(toggleBGColor);
+
+      viewMenu->exec(mapToGlobal(event->pos()));
+  }
+  QGLWidget::mouseReleaseEvent(event);  //Dont forget to pass on the event to parent
+}
+
 void GLViewer::mousePressEvent(QMouseEvent *event) {
-    lastPos = event->pos();
+  button_pressed_ = true;
+  lastPos = event->pos();
 }
 
 void GLViewer::wheelEvent(QWheelEvent *event) {
     zTra += ((float)event->delta())/25.0; 
-    updateGL();
+    clearAndUpdate();
 }
 void GLViewer::mouseMoveEvent(QMouseEvent *event) {//TODO: consolidate setRotation methods
     int dx = event->x() - lastPos.x();
     int dy = event->y() - lastPos.y();
 
     if (event->buttons() & Qt::LeftButton) {
-        setXRotation(xRot - 8 * dy);
-        setYRotation(yRot + 8 * dx);
-    } else if (event->buttons() & Qt::RightButton) {
-        setXRotation(xRot - 8 * dy);
-        setZRotation(zRot + 8 * dx);
+      switch (QApplication::keyboardModifiers()){
+        case Qt::NoModifier:  
+            setXRotation(xRot - 8 * dy);
+            setYRotation(yRot + 8 * dx);
+            break;
+        case Qt::ControlModifier:  
+            setXRotation(xRot - 8 * dy);
+            setZRotation(zRot + 8 * dx);
+            break;
+        case Qt::ShiftModifier:  
+            xTra += dx/200.0;
+            yTra -= dy/200.0;
+            clearAndUpdate();
+      }
     } else if (event->buttons() & Qt::MidButton) {
-        xTra += dx/200.0;
-        yTra -= dy/200.0;
-        updateGL();
+            xTra += dx/200.0;
+            yTra -= dy/200.0;
+            clearAndUpdate();
     }
+
     lastPos = event->pos();
 }
 
 void GLViewer::updateTransforms(QList<QMatrix4x4>* transforms){
     ROS_WARN_COND(transforms->size() < cloud_matrices->size(), "Got less transforms than before!");
     // This doesn't deep copy, but should work, as qlist maintains a reference count 
-    delete cloud_matrices;
+    //FIXME: This should be replaced by a mutex'ed delete. Requires also to mutex all the read accesses
+    QList<QMatrix4x4>* cloud_matrices_tmp = cloud_matrices;
     cloud_matrices = transforms; 
     ROS_DEBUG("New Cloud matrices size: %d", cloud_matrices->size());
-    updateGL();
+    //clearAndUpdate();
+    //FIXME: This should be replaced by a mutex'ed delete. Requires also to mutex all the read accesses
+    delete cloud_matrices_tmp;
 }
 
 void GLViewer::addPointCloud(pointcloud_type * pc, QMatrix4x4 transform){
     ROS_DEBUG("pc pointer in addPointCloud: %p (this is %p in thread %d)", pc, this, (unsigned int)QThread::currentThreadId());
-    pointCloud2GLStrip(pc);
+    if(ParameterServer::instance()->get<double>("squared_meshing_threshold") < 0){
+      pointCloud2GLPoints(pc);
+    } else {
+      pointCloud2GLStrip(pc);
+    }
     cloud_matrices->push_back(transform); //keep for later
-    updateGL();
+    clearAndUpdate();
+    //QApplication::processEvents(QEventLoop::ExcludeSocketNotifiers);
+    /*
+    std::string file_prefix = ParameterServer::instance()->get<std::string>("screencast_path_prefix");
+    if(!file_prefix.empty()){
+      QString filename;
+      filename.sprintf("%s%.5d.png", file_prefix.c_str(), cloud_matrices->size());
+      QPixmap::grabWidget(this->myparent).save(filename);
+    }
+    */
+}
+
+void GLViewer::addFeatures(const std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> >* feature_locations_3d)
+{
+    ScopedTimer s(__FUNCTION__);
+    ROS_DEBUG("Making GL list from feature points");
+    GLuint feature_list_index = glGenLists(1);
+    if(!feature_list_index) {
+        ROS_ERROR("No display list could be created");
+        return;
+    }
+    glNewList(feature_list_index, GL_COMPILE);
+    feature_list_indices.push_back(feature_list_index);
+    glBegin(GL_LINES);
+    float r = (float)rand()/(float)RAND_MAX;
+    float g = (float)rand()/(float)RAND_MAX;
+    float b = (float)rand()/(float)RAND_MAX;
+    BOOST_FOREACH(const Eigen::Vector4f& ft, *feature_locations_3d)
+    {
+      if(std::isfinite(ft[2])){
+        glColor4f(r,g,b, 1.0); //inverse of bg color, non transp
+        //glColor4f(1-bg_col_[0],bg_col_[1],bg_col_[2],1.0); //inverse of bg color, non transp
+        glVertex3f(ft[0], ft[1], ft[2]);
+        glColor4f(r,g,b, 0.0); //inverse of bg color, non transp
+        //glColor4f(1-bg_col_[0],bg_col_[1],bg_col_[2],0.0); //inverse of bg color, non transp
+        glVertex3f(ft[0], ft[1], ft[2]-sqrt(depth_covariance(ft[2])));
+      }
+    }
+    glEnd();
+    glEndList();
 }
 
 void GLViewer::pointCloud2GLStrip(pointcloud_type * pc){
-    struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
+    ScopedTimer s(__FUNCTION__);
     ROS_DEBUG("Making GL list from point-cloud pointer %p in thread %d", pc, (unsigned int)QThread::currentThreadId());
     GLuint cloud_list_index = glGenLists(1);
     if(!cloud_list_index) {
@@ -366,7 +612,6 @@ void GLViewer::pointCloud2GLStrip(pointcloud_type * pc){
     }
     float mesh_thresh = ParameterServer::instance()->get<double>("squared_meshing_threshold");
     glNewList(cloud_list_index, GL_COMPILE);
-    cloud_list_indices.push_back(cloud_list_index);
     //ROS_INFO_COND(!pc->is_dense, "Expected dense cloud for opengl drawing");
     point_type origin;
     origin.x = 0;
@@ -398,10 +643,7 @@ void GLViewer::pointCloud2GLStrip(pointcloud_type * pc){
                     flip = false; //correct order, upper first
                     //Prepare the first two vertices of a triangle strip
                     //drawTriangle(*ul, *ll, *ur);
-                    b = *(  (unsigned char*)(&ul->rgb));
-                    g = *(1+(unsigned char*)(&ul->rgb));
-                    r = *(2+(unsigned char*)(&ul->rgb));
-                    glColor3ub(r,g,b);
+                    setGLColor(*ul);
 
                     //glColor3ub(255,0,0);
                     glVertex3f(ul->x, ul->y, ul->z);
@@ -426,10 +668,7 @@ void GLViewer::pointCloud2GLStrip(pointcloud_type * pc){
                   }
                 }
                 if(strip_on) { //Be this the second or the first vertex, insert it
-                  b = *(  (unsigned char*)(&ll->rgb));
-                  g = *(1+(unsigned char*)(&ll->rgb));
-                  r = *(2+(unsigned char*)(&ll->rgb));
-                  glColor3ub(r,g,b);
+                  setGLColor(*ll);
 
                   //glColor3ub(0,255,0);
                   glVertex3f(ll->x, ll->y, ll->z);
@@ -450,10 +689,7 @@ void GLViewer::pointCloud2GLStrip(pointcloud_type * pc){
                 }
                 //Complete the triangle with both leftern neighbors
                 //drawTriangle(*ul, *ll, *ur);
-                b = *(  (unsigned char*)(&ul->rgb));
-                g = *(1+(unsigned char*)(&ul->rgb));
-                r = *(2+(unsigned char*)(&ul->rgb));
-                glColor3ub(r,g,b);
+                setGLColor(*ul);
 
                 //glColor3ub(255,0,0);
                 glVertex3f(ul->x, ul->y, ul->z);
@@ -475,10 +711,7 @@ void GLViewer::pointCloud2GLStrip(pointcloud_type * pc){
                   strip_on = false;
                   continue;
                 }
-                b = *(  (unsigned char*)(&ll->rgb));
-                g = *(1+(unsigned char*)(&ll->rgb));
-                r = *(2+(unsigned char*)(&ll->rgb));
-                glColor3ub(r,g,b);
+                setGLColor(*ul);
 
                 glVertex3f(ll->x, ll->y, ll->z);
               } else {
@@ -493,12 +726,12 @@ void GLViewer::pointCloud2GLStrip(pointcloud_type * pc){
     }
     ROS_DEBUG("Compiled pointcloud into list %i",  cloud_list_index);
     glEndList();
+    cloud_list_indices.push_back(cloud_list_index);
     //pointcloud_type pc_empty;
     //pc_empty.points.swap(pc->points);
     //pc->width = 0;
     //pc->height = 0;
     Q_EMIT cloudRendered(pc);
-    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
 }
 
 void GLViewer::deleteLastNode(){
@@ -509,10 +742,48 @@ void GLViewer::deleteLastNode(){
 	GLuint nodeId = cloud_list_indices.back();
 	cloud_list_indices.pop_back();
 	glDeleteLists(nodeId,1);
+	GLuint ftId = feature_list_indices.back();
+	feature_list_indices.pop_back();
+	glDeleteLists(ftId,1);
+}
+
+void GLViewer::pointCloud2GLPoints(pointcloud_type * pc){
+    ScopedTimer s(__FUNCTION__);
+    ROS_DEBUG("Making GL list from point-cloud pointer %p in thread %d", pc, (unsigned int)QThread::currentThreadId());
+    GLuint cloud_list_index = glGenLists(1);
+    if(!cloud_list_index) {
+        ROS_ERROR("No display list could be created");
+        return;
+    }
+    float mesh_thresh = ParameterServer::instance()->get<double>("squared_meshing_threshold");
+    cloud_list_indices.push_back(cloud_list_index);
+    glNewList(cloud_list_index, GL_COMPILE);
+    glBegin(GL_POINTS);
+    //ROS_INFO_COND(!pc->is_dense, "Expected dense cloud for opengl drawing");
+    point_type origin;
+    origin.x = 0;
+    origin.y = 0;
+    origin.z = 0;
+
+    float depth;
+    unsigned int w=pc->width, h=pc->height;
+    for(unsigned int x = 0; x < w-1; x++){
+        for(unsigned int y = 0; y < h-1; y++){
+            using namespace pcl;
+            const point_type* p = &pc->points[x+y*w]; //current point
+            if(!(validXYZ(*p))) continue;
+            setGLColor(*p);
+            glVertex3f(p->x, p->y, p->z);
+        }
+    }
+    glEnd();
+    ROS_DEBUG("Compiled pointcloud into list %i",  cloud_list_index);
+    glEndList();
+    Q_EMIT cloudRendered(pc);
 }
 
 void GLViewer::pointCloud2GLList(pointcloud_type const * pc){
-    struct timespec starttime, finish; double elapsed; clock_gettime(CLOCK_MONOTONIC, &starttime);
+    ScopedTimer s(__FUNCTION__);
     ROS_DEBUG("Making GL list from point-cloud pointer %p in thread %d", pc, (unsigned int)QThread::currentThreadId());
     GLuint cloud_list_index = glGenLists(1);
     if(!cloud_list_index) {
@@ -562,35 +833,37 @@ void GLViewer::pointCloud2GLList(pointcloud_type const * pc){
     glEnd();
     ROS_DEBUG("Compiled pointcloud into list %i",  cloud_list_index);
     glEndList();
-    clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
 }
 
 void GLViewer::reset(){
-    glDeleteLists(1,cloud_list_indices.back());
-    cloud_list_indices.clear();
-    cloud_matrices->clear();
-    if(edge_list_) {
-      delete edge_list_;
-      edge_list_ = NULL;
+    if(!cloud_list_indices.empty()){
+      unsigned int max= cloud_list_indices.size() > feature_list_indices.size()? cloud_list_indices.back() : feature_list_indices.back();
+      glDeleteLists(1,max);
     }
-    updateGL();
+    cloud_list_indices.clear();
+    feature_list_indices.clear();
+    cloud_matrices->clear();
+    edge_list_.clear();
+    clearAndUpdate();
 }
 QImage GLViewer::renderList(QMatrix4x4 transform, int list_id){
     return QImage();
 }
 
-void GLViewer::setEdges(QList<QPair<int, int> >* edge_list){
-  if(edge_list_) delete edge_list_;
-  edge_list_ = edge_list;
+void GLViewer::setEdges(const QList<QPair<int, int> >* edge_list){
+  //if(edge_list_) delete edge_list_;
+  edge_list_ = *edge_list;
 }
 
 void GLViewer::drawEdges(){
-  if(edge_list_ == NULL) return;
+  if(edge_list_.empty()) return;
+  //glEnable (GL_LINE_STIPPLE);
+  //glLineStipple (1, 0x1111);
   glBegin(GL_LINES);
   glLineWidth(12);
-  for(int i = 0; i < edge_list_->size(); i++){
-    int id1 = (*edge_list_)[i].first;
-    int id2 = (*edge_list_)[i].second;
+  for(int i = 0; i < edge_list_.size(); i++){
+    int id1 = edge_list_[i].first;
+    int id2 = edge_list_[i].second;
     float x,y,z;
     if(cloud_matrices->size() > id1 && cloud_matrices->size() > id2){//only happens in weird circumstances
       if(abs(id1 - id2) == 1){//consecutive
@@ -609,9 +882,33 @@ void GLViewer::drawEdges(){
       z = (*cloud_matrices)[id2](2,3);
       glVertex3f(x,y,z);
     }
-    else ROS_ERROR("Not enough cloud matrices (%d) for vertex ids (%d and %d)", cloud_matrices->size(), id1, id2);
+    //This happens if the edges are updated faster than the poses/clouds
+    else ROS_WARN("Not enough cloud matrices (%d) for vertex ids (%d and %d)", cloud_matrices->size(), id1, id2);
   }
   glEnd();
+  //glDisable (GL_LINE_STIPPLE);
+
+  if(show_tfs_){
+    glDisable(GL_DEPTH_TEST);
+    glColor4f(1-bg_col_[0],1-bg_col_[1],1-bg_col_[2],1.0); //inverse of bg color, non transp
+    for(int i = 0; i < edge_list_.size(); i++){
+      int id1 = edge_list_[i].first;
+      int id2 = edge_list_[i].second;
+      if(cloud_matrices->size() > id1 && cloud_matrices->size() > id2){//only happens in weird circumstances
+        Eigen::Vector3f x1((*cloud_matrices)[id1](0,3), (*cloud_matrices)[id1](1,3), (*cloud_matrices)[id1](2,3));
+        Eigen::Vector3f x2((*cloud_matrices)[id2](0,3), (*cloud_matrices)[id2](1,3), (*cloud_matrices)[id2](2,3));
+        Eigen::Vector3f dx = x2 - x1;
+        Eigen::Vector3f xm = x1 + 0.5*dx;
+
+        QString edge_info;
+        edge_info.sprintf("%d-%d:\n(%.2f, %.2f, %.2f)", id1, id2, dx(0), dx(1), dx(2));
+        this->renderText(xm(0), xm(1), xm(2), edge_info, QFont("Monospace", 6));
+      }
+      //This happens if the edges are updated faster than the poses/clouds
+      else ROS_WARN("Not enough cloud matrices (%d) for vertex ids (%d and %d)", cloud_matrices->size(), id1, id2);
+    }
+    glEnable(GL_DEPTH_TEST);
+  }
 }
 
 
@@ -636,7 +933,7 @@ bool GLViewer::setClickedPosition(int x, int y) {
     glReadPixels( x, int(winY), 1, 1, GL_DEPTH_COMPONENT, GL_FLOAT, &winZ );
     if(winZ != 1){ //default value, where nothing was rendered
       gluUnProject( winX, winY, winZ, modelview, projection, viewport, &posX, &posY, &posZ);
-      ROS_INFO_STREAM((float)winZ << ", " << posX << "," << posY << "," << posZ);
+      ROS_DEBUG_STREAM((float)winZ << ", " << posX << "," << posY << "," << posZ);
       viewpoint_tf_(0,3) = -posX;
       viewpoint_tf_(1,3) = -posY;
       viewpoint_tf_(2,3) = -posZ;
@@ -650,19 +947,21 @@ void GLViewer::toggleTriangulation() {
     ROS_INFO("Toggling Triangulation");
     if(polygon_mode == GL_FILL){ // Turn on Pointcloud mode
         polygon_mode = GL_POINT;
-    } else if(polygon_mode == GL_POINT){ // Turn on Wireframe mode
-        polygon_mode = GL_LINE;
+    //Wireframe mode is Slooow
+    //} else if(polygon_mode == GL_POINT){ // Turn on Wireframe mode
+        //polygon_mode = GL_LINE;
     } else { // Turn on Surface mode
         polygon_mode = GL_FILL;
     }
     glPolygonMode(GL_FRONT_AND_BACK, polygon_mode);
-    updateGL();
+    clearAndUpdate();
 }
 
-void GLViewer::drawToPS(QString filname){
+void GLViewer::drawToPS(QString filename){
 #ifdef GL2PS
 
-  FILE *fp = fopen("glviewer.pdf", "wb");
+  FILE *fp = fopen(qPrintable(filename), "wb");
+  if(!fp) ROS_ERROR("Could not open file %s", qPrintable(filename));
   GLint buffsize = 0, state = GL2PS_OVERFLOW;
   GLint viewport[4];
   char *oldlocale = setlocale(LC_NUMERIC, "C");
@@ -686,4 +985,9 @@ void GLViewer::drawToPS(QString filname){
 #else
   QMessageBox::warning(this, tr("This functionality is not supported."), tr("This feature needs to be compiled in. To do so, install libgl2ps-dev and set the USE_GL2PS flag at the top of CMakeLists.txt. The feature has been removed to ease the installation process, sorry for the inconvenience."));
 #endif
+}
+
+
+inline void GLViewer::clearAndUpdate(){
+  updateGL();
 }

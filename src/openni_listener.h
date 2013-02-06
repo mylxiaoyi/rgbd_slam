@@ -106,7 +106,7 @@ class OpenNIListener : public QObject {
      * Which topics to listen to and which feature detector/extractor to use is queried from the parameter 
      * server.
      */
-    OpenNIListener(ros::NodeHandle nh, GraphManager* g_mgr);
+    OpenNIListener(GraphManager* g_mgr);
 
     //!Delete tflistener, shutdown ros publishers
     ~OpenNIListener();

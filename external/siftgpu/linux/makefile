@@ -48,7 +48,7 @@ SRC_SIFTGPU = ../src/SiftGPU
 SRC_DRIVER = ../src/TestWin
 SRC_SERVER = ../src/ServerSiftGPU
 CC = g++
-CFLAGS =  -I$(INC_DIR) -fPIC -L/usr/lib64 -L/usr/lib -L./bin -Wall -Wno-deprecated -pthread  
+CFLAGS =  -g -O2 -I$(INC_DIR) -fPIC -L/usr/lib64 -L/usr/lib -L./bin -Wall -Wno-deprecated -pthread  
 
 ifneq ($(siftgpu_enable_sse), 0)
 	CFLAGS += $(siftgpu_sse_options)

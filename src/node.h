@@ -34,14 +34,6 @@
 #include <tf/transform_datatypes.h>
 #include <QMutex>
 
-// ICP_1 for external binary
-//#define USE_ICP_BIN
-
-// ICP_2 for included function
-//#define USE_ICP_CODE
-
-//#define USE_SIFT_GPU
-
 #ifdef USE_ICP_BIN
 #include "gicp-fallback.h"
 #endif
@@ -111,11 +103,6 @@ public:
 			const Eigen::Matrix4f* initial_transformation = NULL);
 #endif
 	
-
-	///Send own pointcloud with given frame, publisher and timestamp
-	void publish(ros::Time timestamp, ros::Publisher pub);
-
-	void buildFlannIndex();
   //!Fills "matches" and returns ratio of "good" features 
   //!in the sense of distinction via the "nn_distance_ratio" setting (see parameter server)
 	unsigned int featureMatching(const Node* other, std::vector<cv::DMatch>* matches) const;
@@ -125,8 +112,8 @@ public:
                                             Eigen::Matrix4f& transformation,
                                             const Eigen::Matrix4f& initial_transformation);
 	
-	static const double gicp_epsilon = 1e-4;
-	static const double gicp_d_max = 0.20; // 10cm
+	static const double gicp_epsilon = 1e-3;
+	static const double gicp_d_max_ = 5.0; // 10cm
 	static const int gicp_max_iterations = 10;
 	static const int gicp_min_point_cnt = 100;
 		
@@ -148,9 +135,14 @@ public:
 
   //!erase the points from the cloud to save memory
   void clearPointCloud();
+  //!reduce the points from the cloud using a voxelgrid_filter to save memory
+  void reducePointCloud(double voxelfilter_size);
 	//PointCloud pc;
 	///pointcloud_type centrally defines what the pc is templated on
-	unsigned int id_; ///must correspond to the g2o vertex id
+  int id_;         // number of camera nodes in the graph when the node was added
+	int seq_id_;      // number of images that have been processed (even if they were not added)
+	int vertex_id_;   // id of the corresponding vertex in the g2o graph
+  bool valid_tf_estimate_;      //Flags whether the data of this node should be considered for postprocessing steps, e.g., visualization, trajectory, map creation
   pointcloud_type::Ptr pc_col;
   ///descriptor definitions
 	cv::Mat feature_descriptors_;         
@@ -164,13 +156,26 @@ public:
   ///Contains the minimum and maximum depth in the feature's range (not used yet)
   std::vector<std::pair<float, float> > feature_depth_stats_;
 
+#ifdef  DO_FEATURE_OPTIMIZATION
 
+  std::map<int, int> kpt_to_landmark;
+  // std::set<int> visible_landmarks;
+#endif
 
+  const cv::flann::Index* getFlannIndex() const;
+  void knnSearch(cv::Mat& query,
+                 cv::Mat& indices,
+                 cv::Mat& dists,
+                 int knn, 
+                 const cv::flann::SearchParams& params) const
+  {
+    this->flannIndex->knnSearch(query, indices, dists, knn, params);
+  }
 
 protected:
   static QMutex gicp_mutex;
   static QMutex siftgpu_mutex;
-	cv::flann::Index* flannIndex;
+	mutable cv::flann::Index* flannIndex;
   tf::StampedTransform base2points_; //!<contains the transformation from the base (defined on param server) to the point_cloud
   tf::StampedTransform ground_truth_transform_;//!<contains the transformation from the mocap system
   tf::StampedTransform odom_transform_;        //!<contains the transformation from the wheel encoders/joint states
@@ -200,18 +205,13 @@ protected:
                    const cv::Mat& depth,
                    const sensor_msgs::CameraInfoConstPtr& cam_info);
 
-	// helper for ransac
-	template<class CONTAINER>
-	Eigen::Matrix4f getTransformFromMatchesUmeyama(const Node* other_node, CONTAINER matches) const;
-	// helper for ransac
-	// check for distances only if max_dist_cm > 0
-	template<class CONTAINER>
+  // Compute the transformation from matches using Eigen::umeyama
+	Eigen::Matrix4f getTransformFromMatchesUmeyama(const Node* other_node, std::vector<cv::DMatch> matches) const;
+	// Compute the transformation from matches using pcl::TransformationFromCorrespondences
 	Eigen::Matrix4f getTransformFromMatches(const Node* other_node, 
-                                          const CONTAINER & matches,
+                                          const std::vector<cv::DMatch> & matches,
                                           bool& valid, 
                                           float max_dist_m = -1) const;
-	//std::vector<cv::DMatch> const* matches,
-	//pcl::TransformationFromCorrespondences& tfc);
 
 	///Get the norm of the translational part of an affine matrix (Helper for isBigTrafo)
 	void mat2dist(const Eigen::Matrix4f& t, double &dist){
@@ -222,18 +222,20 @@ protected:
   ///Retrieves and stores the transformation from base to point cloud at capturing time 
   void retrieveBase2CamTransformation();
 	// helper for ransac
-  template<class CONTAINER>
-	void computeInliersAndError(const CONTAINER & initial_matches,
+	void computeInliersAndError(const std::vector<cv::DMatch> & initial_matches,
                               const Eigen::Matrix4f& transformation,
                               const std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> >& origins,
-                              const std::vector<std::pair<float, float> > origins_depth_stats,
+                              //const std::vector<std::pair<float, float> > origins_depth_stats,
                               const std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> >& targets,
-                              const std::vector<std::pair<float, float> > targets_depth_stats,
-                              std::vector<cv::DMatch>& new_inliers, //output var
-                              double& mean_error, std::vector<double>& errors,
+                              //const std::vector<std::pair<float, float> > targets_depth_stats,
+                              std::vector<cv::DMatch>& new_inliers, //pure output var
+                              double& mean_error, //pure output var //std::vector<double>& errors,
                               double squaredMaxInlierDistInM = 0.0009) const; //output var;
 
 public:
 	EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };
+
+void pairwiseObservationLikelihood(const Node* newer_node, const Node* older_node, MatchingResult& mr);
+void squareroot_descriptor_space(cv::Mat& feature_descriptors);
 #endif

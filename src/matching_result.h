@@ -27,7 +27,8 @@ class MatchingResult {
           rmse(0.0), 
           ransac_trafo(Eigen::Matrix4f::Identity()), 
           final_trafo(Eigen::Matrix4f::Identity()), 
-          icp_trafo(Eigen::Matrix4f::Identity())
+          icp_trafo(Eigen::Matrix4f::Identity()),
+          inlier_points(0), outlier_points(0), occluded_points(0)
         {
             edge.id1 = edge.id2 = -1;
         }
@@ -38,6 +39,7 @@ class MatchingResult {
         Eigen::Matrix4f ransac_trafo;
         Eigen::Matrix4f final_trafo;
         Eigen::Matrix4f icp_trafo;
+        unsigned int inlier_points, outlier_points, occluded_points, all_points;
     public:
       EIGEN_MAKE_ALIGNED_OPERATOR_NEW
 };

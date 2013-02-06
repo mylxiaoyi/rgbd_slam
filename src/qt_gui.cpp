@@ -25,13 +25,13 @@
 #include <QDir>
 #include <QPixmap>
 #include <QFont>
-#include <QList>
-#include <QList>
 #include <QIcon>
 #include <QKeySequence>
 #include "qt_gui.h"
 #include <limits>
 #include "glviewer.h"
+#include <QList>
+#include <QComboBox>
 
 ///Constructs a QT GUI for easy control of RGBDSLAM
 Graphical_UI::Graphical_UI() : filename("quicksave.pcd"), glviewer(NULL)
@@ -55,9 +55,10 @@ Graphical_UI::Graphical_UI() : filename("quicksave.pcd"), glviewer(NULL)
                  "along with RGBDSLAM.  If not, refer to <a href=\"http://www.gnu.org/licenses/\">http://www.gnu.org/licenses</a>.</p>"));
     mouseHelpText = new QString(tr(
                 "<p><b>3D Viewer Mouse Commands:</b>"
-                "<ul><li><i>Left/Right button:</i> rotation.</li>"
-                "    <li><i>Middle button:</i> shift.</li>"
-                "    <li><i>Wheel:</i> zoom.</li>"
+                "<ul><li><i>Left button:</i> Rotate view around x/y.</li>"
+                "    <li><i>Ctrl + left button:</i> rotate view around x/z.</li>"
+                "    <li><i>Shift + left button:</i> Translate view.</li>"
+                "    <li><i>Wheel:</i> zoom view.</li>"
                 "    <li><i>Middle double click:</i> reset camera position.</li>"
                 "    <li><i>Double click on object:</i> set pivot to clicked point.</li>"
                 "    <li><i>Double click on background:</i> reset view to camera pose.</li><ul></p>")); feature_flow_image_label = new QLabel(*mouseHelpText);
@@ -122,7 +123,7 @@ Graphical_UI::Graphical_UI() : filename("quicksave.pcd"), glviewer(NULL)
     statusBar()->addPermanentWidget(infoLabel, 0);
 
     setWindowTitle(tr("RGBDSLAM"));
-    setMinimumSize(790, 590);
+    setMinimumSize(790, 290);
     resize(1000, 700);
 }
 
@@ -173,6 +174,13 @@ void Graphical_UI::setInfo(QString message){
     infoLabel->repaint();
 }
 
+void Graphical_UI::saveG2OGraphDialog() {
+    QString graph_filename = QFileDialog::getSaveFileName(this, "Save G2O Graph to File", "graph.g2o", tr("G2O (*.g2o)"));
+    Q_EMIT saveG2OGraph(graph_filename);
+    statusBar()->showMessage(tr("Saving Graph"));
+    //infoLabel->setText(message);
+}
+
 void Graphical_UI::quickSaveAll() {
     Q_EMIT saveAllClouds(filename);
     QString message = tr("Saving Whole Model to ");
@@ -187,6 +195,15 @@ void Graphical_UI::saveFeatures() {
     Q_EMIT saveAllFeatures(filename);
     QString message = tr("Saving Features");
     statusBar()->showMessage(message);
+}
+void Graphical_UI::saveOctomap() {
+    filename = QFileDialog::getSaveFileName(this, "Create and Save Octomap to File", filename, tr("OcTree (*.ot)"));
+    if(filename.size() > 0){
+      Q_EMIT saveOctomapSig(filename);
+      QString message = tr("Creating Octomap");
+      statusBar()->showMessage(message);
+    }
+    //infoLabel->setText(message);
 }
 
 void Graphical_UI::saveAll() {
@@ -210,9 +227,26 @@ void Graphical_UI::optimizeGraphTrig() {
 void Graphical_UI::saveVectorGraphic() {
     QMessageBox::warning(this, tr("Don't render to pdf while point clouds are shown"), tr("This is meant for rendereing the pose graph. Rendering clouds to pdf will generate huge files!"));
     QString myfilename = QFileDialog::getSaveFileName(this, "Save Current 3D Display to Vector Graphic", "pose_graph.pdf", tr("All Files (*.*)"));
-    glviewer->drawToPS(myfilename);
-    QString message = tr("Drawing current Display");
-    statusBar()->showMessage(message);
+    if(!myfilename.size() == 0){
+      glviewer->drawToPS(myfilename);
+      QString message = tr("Drawing current Display");
+      statusBar()->showMessage(message);
+    } else {
+      QString message = tr("Empty Filename");
+    }
+}
+void Graphical_UI::toggleScreencast(bool on) {
+  if(on){
+    QString myfilename = QFileDialog::getSaveFileName(this, "Path Prefix for Screencast Frames", "rgbdslam_frame_", tr("All Files (*.*)"));
+    if(myfilename.size() > 0){
+      ParameterServer::instance()->set("screencast_path_prefix", std::string(qPrintable(myfilename)));
+      QString message = tr("Saving screencast frames.");
+      statusBar()->showMessage(message);
+    }
+  }
+  else {
+    ParameterServer::instance()->set("screencast_path_prefix", std::string());
+  }
 }
 void Graphical_UI::saveTrajectoryDialog() {
     QString myfilename = QFileDialog::getSaveFileName(this, "Save Current Trajectory Estimate", "trajectory", tr("All Files (*.*)"));
@@ -251,13 +285,79 @@ void Graphical_UI::setStereoShift() {
     if(ok){ glviewer->setStereoShift(value); }
 }
 
-void Graphical_UI::setMax() {
-    bool ok;
-    double value = QInputDialog::getDouble(this, tr("Set Max Depth"),
-                                            tr("Enter Max Depth [in cm]\n (negativ if no Filtering is required):"), -100.00, -10000000, 10000000, 2, &ok);
-    if(ok){
-    	Q_EMIT setMaxDepth(value/100.0);
+void Graphical_UI::setParam(QString text){
+    std::map<std::string, boost::any>&  config = ParameterServer::instance()->getConfigData();
+    std::map<std::string, boost::any>::const_iterator itr;
+    for (itr = config.begin(); itr != config.end(); ++itr) {
+      if(itr->first == qPrintable(text)){
+        bool ok;
+        if (itr->second.type() == typeid(std::string)) {
+          QString prev_val = boost::any_cast<std::string>(itr->second).c_str();
+          QString new_val = QInputDialog::getText(this, text, tr("New Value:"), 
+                                                  QLineEdit::Normal, prev_val, &ok);
+          if (ok){
+            ParameterServer::instance()->set(itr->first, std::string(qPrintable(new_val)));
+          }
+        } 
+        else if (itr->second.type() == typeid(int)) {
+          int prev_val = boost::any_cast<int>(itr->second);
+          int new_val = QInputDialog::getInt(this, text, tr("New Value:"), 
+                                             prev_val, 
+                                             std::numeric_limits<int>::min(), 
+                                             std::numeric_limits<int>::max(), 1, &ok);
+          if (ok){
+            ParameterServer::instance()->set(itr->first, new_val);
+          }
+        } 
+        else if (itr->second.type() == typeid(double)) {
+          double prev_val = boost::any_cast<double>(itr->second);
+          double new_val = QInputDialog::getDouble(this, text, tr("New Value:"), 
+                                             prev_val,
+                                             std::numeric_limits<double>::min(), 
+                                             std::numeric_limits<double>::max(), 3, &ok);
+          if (ok){
+            ParameterServer::instance()->set(itr->first, new_val);
+          }
+        } 
+        else if (itr->second.type() == typeid(bool)) {
+          QStringList truefalse;
+          truefalse.append("False");//item 0 
+          truefalse.append("True"); //item 1
+          //Per definition the cast from bool to int results in 0 or 1
+          int prev_val = boost::any_cast<bool>(itr->second);
+          QString new_val = QInputDialog::getItem(this, text, tr("New Value:"), 
+                                                  truefalse, prev_val, false, &ok);
+          if (ok){
+            if(new_val == "False")
+              ParameterServer::instance()->set(itr->first, false);
+            else
+              ParameterServer::instance()->set(itr->first, true);
+          }
+        }
+      }
     }
+}
+
+
+void Graphical_UI::setParam() {
+    std::map<std::string, boost::any>&  config = ParameterServer::instance()->getConfigData();
+    std::map<std::string, boost::any>::const_iterator itr;
+    QStringList list;
+    for (itr = config.begin(); itr != config.end(); ++itr) {
+      QString name(itr->first.c_str());
+      //QString description(ParameterServer::instance()->getDescription(itr->first).c_str());
+      list.append(name);
+    }
+    bool ok = false;
+    QString name = QInputDialog::getItem(this, tr("Select Parameter to Change"), 
+                                         tr("Note: Changing parameters during runtime is not honored for all parameters.\n"
+                                            "In particular changing parameters used during the initial setup "
+                                            "(e.g. topic names) will have no effect.\n\n"
+                                            "Options should be set via launchfiles!\n\n"
+                                            "This functionality is mostly for quickly trying out the effect of "
+                                            "individual parameters.\n\nParameter Name"), 
+                                         list, 0, false, &ok);
+    if(ok) setParam(name);
 }
 void Graphical_UI::toggleFullscreen(bool mode){
     this->menuBar()->setVisible(!mode);
@@ -272,7 +372,7 @@ void Graphical_UI::toggleFullscreen(bool mode){
 void Graphical_UI::pruneEdgesWithHighError(){
     bool ok;
     float value = QInputDialog::getDouble(this, tr("Set Max Edge Error"),
-                                          tr("No Text"), 1.00, -10000000, 10000000, 2, &ok);
+                                          tr("No Text"), 1.00, -10000000, 10000000, 4, &ok);
     if(ok){
     	Q_EMIT pruneEdgesWithErrorAbove(value);
     }
@@ -315,6 +415,9 @@ void Graphical_UI::bagRecording(bool pause_on) {
 }
 void Graphical_UI::toggleCloudStorage(bool storage) {
   ParameterServer::instance()->set("store_pointclouds", storage);
+}
+void Graphical_UI::toggleLandmarkOptimization(bool landmarks) {
+  ParameterServer::instance()->set("optimize_landmarks", landmarks);
 }
 
 void Graphical_UI::pause(bool pause_on) {
@@ -368,21 +471,21 @@ void Graphical_UI::set3DDisplay(bool is_on) {
 
 void Graphical_UI::createMenus() {
     //these are the menus created here
-    QMenu *graphMenu;
+    QMenu *dataMenu;
     QMenu *actionMenu;
     QMenu *viewMenu;
     QMenu *settingsMenu;
     QMenu *helpMenu;
 
     //Graph Menu
-    graphMenu = menuBar()->addMenu(tr("&Graph"));
+    dataMenu = menuBar()->addMenu(tr("&Data"));
 
     QAction *quickSaveAct = new QAction(tr("&Save"), this);
     quickSaveAct->setShortcuts(QKeySequence::Save);
     quickSaveAct->setStatusTip(tr("Save all stored point clouds with common coordinate frame to a pcd file"));
     quickSaveAct->setIcon(QIcon::fromTheme("document-save"));//doesn't work for gnome
     connect(quickSaveAct, SIGNAL(triggered()), this, SLOT(quickSaveAll()));
-    graphMenu->addAction(quickSaveAct);
+    dataMenu->addAction(quickSaveAct);
     this->addAction(quickSaveAct);
 
     QAction *saveFeaturesAct = new QAction(tr("Save &Features"), this);
@@ -390,15 +493,23 @@ void Graphical_UI::createMenus() {
     saveFeaturesAct->setStatusTip(tr("Save all feature positions and descriptions in a common coordinate frame to a yaml or xml file"));
     saveFeaturesAct->setIcon(QIcon::fromTheme("document-save"));//doesn't work for gnome
     connect(saveFeaturesAct, SIGNAL(triggered()), this, SLOT(saveFeatures()));
-    graphMenu->addAction(saveFeaturesAct);
+    dataMenu->addAction(saveFeaturesAct);
     this->addAction(saveFeaturesAct);
+
+    QAction *saveOctoAct = new QAction(tr("Save Octomap"), this);
+    //saveOctoAct->setShortcuts(QKeySequence::SaveAs);
+    saveOctoAct->setStatusTip(tr("Create octomap from stored point clouds"));
+    saveOctoAct->setIcon(QIcon::fromTheme("document-save-as"));//doesn't work for gnome
+    connect(saveOctoAct, SIGNAL(triggered()), this, SLOT(saveOctomap()));
+    dataMenu->addAction(saveOctoAct);
+    this->addAction(saveOctoAct);
 
     QAction *saveAct = new QAction(tr("&Save as..."), this);
     saveAct->setShortcuts(QKeySequence::SaveAs);
     saveAct->setStatusTip(tr("Save all stored point clouds with common coordinate frame"));
     saveAct->setIcon(QIcon::fromTheme("document-save-as"));//doesn't work for gnome
     connect(saveAct, SIGNAL(triggered()), this, SLOT(saveAll()));
-    graphMenu->addAction(saveAct);
+    dataMenu->addAction(saveAct);
     this->addAction(saveAct);
 
     QAction *saveIndiAct = new QAction(tr("&Save Node-Wise..."), this);
@@ -406,18 +517,34 @@ void Graphical_UI::createMenus() {
     saveIndiAct->setStatusTip(tr("Save stored point clouds in individual files"));
     saveAct->setIcon(QIcon::fromTheme("document-save-all"));//doesn't work for gnome
     connect(saveIndiAct, SIGNAL(triggered()), this, SLOT(saveIndividual()));
-    graphMenu->addAction(saveIndiAct);
+    dataMenu->addAction(saveIndiAct);
     this->addAction(saveIndiAct);
+
+    QAction *saveG2OGraphAct = new QAction(tr("Save &G2O Graph"), this);
+    saveG2OGraphAct->setStatusTip(tr("Save G2O graph (e.g. for use with the g2o viewer or external optimization)"));
+    saveG2OGraphAct->setIcon(QIcon::fromTheme("document-save"));//doesn't work for gnome
+    connect(saveG2OGraphAct, SIGNAL(triggered()), this, SLOT(saveG2OGraphDialog()));
+    dataMenu->addAction(saveG2OGraphAct);
+    this->addAction(saveG2OGraphAct);
 
     QAction *sendAct = new QAction(tr("&Send Model"), this);
     sendAct->setShortcut(QString("Ctrl+M"));
     sendAct->setStatusTip(tr("Send out all stored point clouds with corrected transform"));
     sendAct->setIcon(QIcon::fromTheme("document-send"));//doesn't work for gnome
     connect(sendAct, SIGNAL(triggered()), this, SLOT(sendAll()));
-    graphMenu->addAction(sendAct);
+    dataMenu->addAction(sendAct);
     this->addAction(sendAct);
 
-    graphMenu->addSeparator();
+    dataMenu->addSeparator();
+
+    QAction *toggleLandmarksAct = new QAction(tr("Toggle &Landmark Optimization"), this);
+    toggleLandmarksAct->setShortcut(QString("L"));
+    toggleLandmarksAct->setCheckable(true);
+    toggleLandmarksAct->setChecked(ParameterServer::instance()->get<bool>("optimize_landmarks"));
+    toggleLandmarksAct->setStatusTip(tr("Toggle whether pose graph includes landmark positions"));
+    connect(toggleLandmarksAct, SIGNAL(toggled(bool)), this, SLOT(toggleLandmarkOptimization(bool)));
+    dataMenu->addAction(toggleLandmarksAct);
+    this->addAction(toggleLandmarksAct);
 
     QAction *toggleMappingAct = new QAction(tr("Toggle &Mapping"), this);
     toggleMappingAct->setShortcut(QString("M"));
@@ -426,26 +553,43 @@ void Graphical_UI::createMenus() {
     toggleMappingAct->setStatusTip(tr("Toggle between SLAM and Localization"));
     toggleMappingAct->setIcon(QIcon::fromTheme("media-playback-start"));//doesn't work for gnome
     connect(toggleMappingAct, SIGNAL(toggled(bool)), this, SLOT(toggleMappingPriv(bool)));
-    graphMenu->addAction(toggleMappingAct);
+    dataMenu->addAction(toggleMappingAct);
     this->addAction(toggleMappingAct);
 
-    graphMenu->addSeparator();
+    dataMenu->addSeparator();
+
+    QAction *clearDisplayAct;
+    clearDisplayAct = new QAction(tr("&Clear 3D Display"), this);
+    clearDisplayAct->setStatusTip(tr("Clears 3D viewer cloud data. Point Clouds are still retained, e.g. for mapping purposes."));
+    clearDisplayAct->setIcon(QIcon::fromTheme("edit-delete"));//doesn't work (for gnome
+    connect(clearDisplayAct, SIGNAL(triggered()), glviewer, SLOT(reset()));
+    dataMenu->addAction(clearDisplayAct);
+    this->addAction(clearDisplayAct);
+
+    QAction *clearCloudsAct = new QAction(tr("Clear Cloud Storage"), this);
+    clearCloudsAct->setStatusTip(tr("Remove Point Clouds from Memory"));
+    clearDisplayAct->setIcon(QIcon::fromTheme("edit-delete"));//doesn't work (for gnome
+    connect(clearCloudsAct, SIGNAL(triggered()), this, SIGNAL(clearClouds()));
+    dataMenu->addAction(clearCloudsAct);
+    this->addAction(clearCloudsAct);
+
+    dataMenu->addSeparator();
 
     QAction *optimizeAct = new QAction(tr("Optimize Trajectory &Estimate"), this);
     optimizeAct->setShortcut(QString("O"));
     optimizeAct->setStatusTip(tr("Compute optimized pose graph with g2o"));
     connect(optimizeAct, SIGNAL(triggered()), this, SLOT(optimizeGraphTrig()));
-    graphMenu->addAction(optimizeAct);
+    dataMenu->addAction(optimizeAct);
     this->addAction(optimizeAct);
 
-    graphMenu->addSeparator();
+    dataMenu->addSeparator();
 
     QAction *exitAct = new QAction(tr("E&xit"), this);
     exitAct->setShortcuts(QKeySequence::Quit);
     exitAct->setStatusTip(tr("Exit the application"));
     exitAct->setIcon(QIcon::fromTheme("application-exit"));//doesn't work for gnome
     connect(exitAct, SIGNAL(triggered()), this, SLOT(close()));
-    graphMenu->addAction(exitAct);
+    dataMenu->addAction(exitAct);
     this->addAction(exitAct);
 
 
@@ -477,6 +621,13 @@ void Graphical_UI::createMenus() {
     connect(oneFrameAct, SIGNAL(triggered()), this, SLOT(getOneFrameCmd()));
     actionMenu->addAction(oneFrameAct);
     this->addAction(oneFrameAct);
+
+    QAction *videoStreamAct = new QAction(tr("Capture Screencast"), this);
+    videoStreamAct->setCheckable(true);
+    videoStreamAct->setChecked(!ParameterServer::instance()->get<std::string>("screencast_path_prefix").empty());
+    connect(videoStreamAct, SIGNAL(toggled(bool)), this, SLOT(toggleScreencast(bool)));
+    actionMenu->addAction(videoStreamAct);
+    this->addAction(videoStreamAct);
 
     QAction *delFrameAct = new QAction(tr("&Delete Last Node"), this);
     delFrameAct->setShortcut(QString("Backspace"));
@@ -513,13 +664,6 @@ void Graphical_UI::createMenus() {
     this->addAction(showErrorAct);
     */
 
-    QAction *maxAct = new QAction(tr("Set Maximum &Depth"), this);
-    maxAct->setShortcut(QString("Ctrl+D"));
-    maxAct->setStatusTip(tr("Set the Maximum Depth a Point can have (negativ if no Filtering is required)"));
-    connect(maxAct, SIGNAL(triggered()), this, SLOT(setMax()));
-    actionMenu->addAction(maxAct);
-    this->addAction(maxAct);
-
     QAction *pruneAct = new QAction(tr("Set Ma&ximum Edge Error"), this);
     pruneAct->setShortcut(QString("Ctrl+X"));
     pruneAct->setStatusTip(tr("Set the Maximum Allowed for Edges"));
@@ -552,10 +696,11 @@ void Graphical_UI::createMenus() {
     viewMenu = menuBar()->addMenu(tr("&View"));
 
 
+    /* Crashes the program even if neither 2d nor 3d widget are activated *
     QAction *toggleFullscreenAct = new QAction(tr("&Fullscreen"), this);
-    QList<QKeySequence> shortcuts;
-    shortcuts.append(QString("F"));
-    toggleFullscreenAct->setShortcuts(shortcuts);
+    //QList<QKeySequence> shortcuts;
+    //shortcuts.append(QString("F"));
+    //toggleFullscreenAct->setShortcuts(shortcuts);
     toggleFullscreenAct->setCheckable(true);
     toggleFullscreenAct->setChecked(false);
     toggleFullscreenAct->setStatusTip(tr("Toggle Fullscreen"));
@@ -563,6 +708,7 @@ void Graphical_UI::createMenus() {
     connect(toggleFullscreenAct, SIGNAL(toggled(bool)), this, SLOT(toggleFullscreen(bool)));
     viewMenu->addAction(toggleFullscreenAct);
     this->addAction(toggleFullscreenAct);
+    */
 
     QAction *toggleStreamAct = new QAction(tr("Toggle &2D Stream"), this);
     toggleStreamAct->setShortcut(QString("2"));
@@ -600,6 +746,22 @@ void Graphical_UI::createMenus() {
       viewMenu->addAction(toggleFollowAct);
       this->addAction(toggleFollowAct);
 
+      QAction *toggleShowGrid = new QAction(tr("Show Grid"), this);
+      toggleShowGrid->setCheckable(true);
+      toggleShowGrid->setChecked(false);
+      toggleShowGrid->setStatusTip(tr("Display XY plane grid"));
+      connect(toggleShowGrid, SIGNAL(toggled(bool)), glviewer, SLOT(toggleShowGrid(bool)));
+      viewMenu->addAction(toggleShowGrid);
+      this->addAction(toggleShowGrid);
+
+      QAction *toggleShowTFs = new QAction(tr("Show Pose TFs"), this);
+      toggleShowTFs->setCheckable(true);
+      toggleShowTFs->setChecked(false);
+      toggleShowTFs->setStatusTip(tr("Display pose transformations at axes"));
+      connect(toggleShowTFs, SIGNAL(toggled(bool)), glviewer, SLOT(toggleShowTFs(bool)));
+      viewMenu->addAction(toggleShowTFs);
+      this->addAction(toggleShowTFs);
+
       QAction *toggleShowIDsAct = new QAction(tr("Show Pose IDs"), this);
       toggleShowIDsAct->setShortcut(QString("I"));
       toggleShowIDsAct->setCheckable(true);
@@ -636,6 +798,14 @@ void Graphical_UI::createMenus() {
       viewMenu->addAction(toggleStereoAct);
       this->addAction(toggleStereoAct);
 
+      QAction *toggleShowFeatures = new QAction(tr("Show &Feature Locations"), this);
+      toggleShowFeatures->setCheckable(true);
+      toggleShowFeatures->setChecked(false);
+      toggleShowFeatures->setStatusTip(tr("Toggle whether feature locations should be rendered"));
+      connect(toggleShowFeatures, SIGNAL(toggled(bool)), glviewer, SLOT(toggleShowFeatures(bool)));
+      viewMenu->addAction(toggleShowFeatures);
+      this->addAction(toggleShowFeatures);
+
       QAction *toggleCloudDisplay = new QAction(tr("Show &Clouds"), this);
       toggleCloudDisplay->setShortcut(QString("C"));
       toggleCloudDisplay->setCheckable(true);
@@ -671,7 +841,7 @@ void Graphical_UI::createMenus() {
     }
 
 
-    //Processing Menu
+    //Settings Menu
     settingsMenu = menuBar()->addMenu(tr("&Settings"));
 
     QAction *reloadAct;
@@ -688,6 +858,13 @@ void Graphical_UI::createMenus() {
     connect(optionAct, SIGNAL(triggered()), this, SLOT(showOptions()));
     settingsMenu->addAction(optionAct);
     this->addAction(optionAct);
+
+    QAction *setAct = new QAction(tr("Set internal &Parameter"), this);
+    setAct->setStatusTip(tr("Change a parameter (This will also change the value on the ROS Parameter server)"));
+    connect(setAct, SIGNAL(triggered()), this, SLOT(setParam()));
+    settingsMenu->addAction(setAct);
+    this->addAction(setAct);
+
 
     //Help Menu
     helpMenu = menuBar()->addMenu(tr("&Help"));
@@ -716,58 +893,106 @@ GLViewer* Graphical_UI::getGLViewer() {
 
 void Graphical_UI::showOptions(){
   QScrollArea* scrollarea = new QScrollArea();
+  scrollarea->setMinimumWidth(600);
   QWidget* scrollarea_content = new QWidget(scrollarea);
   scrollarea_content->setMinimumWidth(500);
-  QFormLayout *formLayout = new QFormLayout(scrollarea_content);
-  formLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
-  formLayout->setLabelAlignment(Qt::AlignLeft);
-  formLayout->setVerticalSpacing(10);
-
-  QLabel* intro = new QLabel("This is an read-only view of the current settings. To modify RGBDSLAM's settings use the ROS parameter server functionality (i.e. set options either in a launch-file or as a command line parameter).");
+  QGridLayout *gridLayout = new QGridLayout(scrollarea_content);
+  //gridLayout->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
+  //gridLayout->setLabelAlignment(Qt::AlignLeft);
+  gridLayout->setVerticalSpacing(10);
+  gridLayout->setContentsMargins(10,10,10,10);
+  QLabel* intro = new QLabel("<h3>This is an read-only view of the current settings. To modify RGBDSLAM's settings use the ROS parameter server functionality (i.e. set options either in a launch-file or as a command line parameter).</h3>");
+  intro->setAlignment(Qt::AlignJustify);
   intro->setWordWrap(true);
-  formLayout->addRow(intro);
+  intro->setMinimumWidth(560);
+  intro->setMinimumHeight(60);
+  gridLayout->addWidget(intro,0,0,1,-1, Qt::AlignJustify);
 
+  QLabel namevalue_header("Parameter Name and Value");
+  gridLayout->addWidget(&namevalue_header, 1, 0);
+  QLabel description_header("Parameter Description");
+  gridLayout->addWidget(&description_header, 1, 1);
 
+  //Iterate through parameters
   std::map<std::string, boost::any>&  config = ParameterServer::instance()->getConfigData();
-  std::map<std::string, boost::any>::const_iterator itr;
-  for (itr = config.begin(); itr != config.end(); ++itr) {
-    QString name(itr->first.c_str());
-    QString description(ParameterServer::instance()->getDescription(itr->first).c_str());
-    QLabel* desc = new QLabel("<b>"+name+"</b><br/>"+description+"<br/><br/>");
-    desc->setWordWrap(true);
-    desc->setToolTip(description);
-    
+  std::map<std::string, boost::any>::const_iterator itr = config.begin();
+  for (int row=2; itr != config.end(); ++itr, row+=3) {
+    //Name and Description
+    QLabel* name_lbl = new QLabel(QString("<b>") + itr->first.c_str() + QString("</b>"), scrollarea_content);
+    name_lbl->setTextFormat(Qt::RichText);
+    name_lbl->setAlignment(Qt::AlignLeft);
+    gridLayout->addWidget(name_lbl, row, 0);
+    QLabel* description = new QLabel(ParameterServer::instance()->getDescription(itr->first).c_str());
+    description->setAlignment(Qt::AlignJustify);
+    description->setWordWrap(true);
+    gridLayout->addWidget(description, row+1, 0, 1,-1);
+
+    //Value
+    QString val_txt;
     if (itr->second.type() == typeid(std::string)) {
-      QLineEdit* editbox = new QLineEdit(QString(boost::any_cast<std::string>(itr->second).c_str()), scrollarea_content);
-      editbox->setToolTip(description);
-      editbox->setReadOnly(true);
-      formLayout->addRow(desc, editbox);
+      val_txt = QString::fromStdString(boost::any_cast<std::string>(itr->second));
     } else if (itr->second.type() == typeid(int)) {
-      QSpinBox* isbox = new QSpinBox();
-      isbox->setMaximum(1e9);
-      isbox->setValue(boost::any_cast<int>(itr->second));
-      isbox->setToolTip(description);
-      isbox->setReadOnly(true);
-      formLayout->addRow(desc, isbox);
+      val_txt = QString::number(boost::any_cast<int>(itr->second));
     } else if (itr->second.type() == typeid(double)) {
-      QDoubleSpinBox* dsbox = new QDoubleSpinBox();
-      dsbox->setMaximum(1e9);
-      dsbox->setValue(boost::any_cast<double>(itr->second));
-      dsbox->setToolTip(description);
-      dsbox->setReadOnly(true);
-      formLayout->addRow(desc, dsbox);
+      val_txt = QString::number(boost::any_cast<double>(itr->second));
     } else if (itr->second.type() == typeid(bool)) {
-      QCheckBox* checkbox = new QCheckBox("", scrollarea_content);
-      checkbox->setChecked(boost::any_cast<bool>(itr->second));
-      checkbox->setToolTip(description);
-      formLayout->addRow(desc, checkbox);
+      val_txt = boost::any_cast<bool>(itr->second)? "True" : "False";
     }
+    QLabel* val_lbl = new QLabel(QString("<tt>") + val_txt + QString("</tt>"), scrollarea_content);
+    val_lbl->setTextFormat(Qt::RichText);
+    val_lbl->setLineWidth(1);
+    val_lbl->setFrameStyle(QFrame::Panel|QFrame::Sunken);
+    //val_lbl->setAlignment(Qt::AlignTop|Qt::AlignLeft);
+    gridLayout->addWidget(val_lbl, row, 1);
+
+    //Separator
+    QFrame* line = new QFrame(scrollarea_content);
+    line->setGeometry(QRect(500, 150, 118, 3));
+    line->setFrameShape(QFrame::HLine);
+    line->setFrameShadow(QFrame::Sunken);
+    gridLayout->addWidget(line, row+2, 0, 1,-1);
   }
-  scrollarea_content->setLayout(formLayout);
+
+
+  scrollarea_content->setLayout(gridLayout);
   scrollarea->setWidget(scrollarea_content);
-  scrollarea->setMinimumWidth(560);
   scrollarea->show();
   scrollarea->raise();
   scrollarea->activateWindow();
+}
+
+
+void Graphical_UI::showBusy(int id, const char* message, int max){
+  bool contained = progressbars.contains(id);
+  QProgressBar* busydialog = NULL;
+  if(!contained) {
+    busydialog = new QProgressBar();
+    busydialog->resize(100, 10);
+    progressbars[id] = busydialog;
+    statusBar()->insertPermanentWidget(0, busydialog);
+  } else {
+    busydialog = progressbars[id];
+  }
+  busydialog->show();
+  busydialog->setMinimum(0);
+  busydialog->setMaximum(max);
+  busydialog->setFormat(QString(message) + " %p%");
+}
+
+void Graphical_UI::setBusy(int id, const char* message, int val){
+  if(progressbars.contains(id)) {
+    QProgressBar* busydialog = progressbars[id];
+    busydialog->show();
+    if(val > busydialog->maximum()){
+      statusBar()->removeWidget(busydialog);
+      busydialog->hide();
+      statusBar()->showMessage(message);
+    } else {
+      busydialog->setValue(val);
+      busydialog->setFormat(QString(message) + " %p%");
+      busydialog->update();
+    }
+  } else 
+    statusBar()->showMessage("Error: Set Value for non-existing progressbar");
 }
 

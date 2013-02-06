@@ -16,6 +16,10 @@
  * along with RGBDSLAM.  If not, see <http://www.gnu.org/licenses/>.
  */
 #include <QMatrix4x4>
+#include <tf/transform_datatypes.h>
+#include <sensor_msgs/Image.h>
+#include <sensor_msgs/CameraInfo.h>
+#include <cv.h>
 
 void printTransform(const char* name, const tf::Transform t) ;
 ///Write Transformation to textstream
@@ -41,6 +45,7 @@ void mat2dist(const Eigen::Matrix4f& t, double &dist);
 
 ///Creates a pointcloud from rgb8 or mono8 coded images + float depth
 pointcloud_type* createXYZRGBPointCloud (const sensor_msgs::ImageConstPtr& depth_msg, const sensor_msgs::ImageConstPtr& rgb_msg, const sensor_msgs::CameraInfoConstPtr& cam_info); 
+pointcloud_type* createXYZRGBPointCloud (const cv::Mat& depth_msg, const cv::Mat& rgb_msg, const sensor_msgs::CameraInfoConstPtr& cam_info); 
 
 ///Helper function to aggregate pointclouds in a single coordinate frame
 void transformAndAppendPointCloud (const pointcloud_type &cloud_in, pointcloud_type &cloud_to_append_to,
@@ -52,6 +57,8 @@ geometry_msgs::Point pointInWorldFrame(const Eigen::Vector4f& point3d, g2o::SE3Q
 // used to decide if the camera has moved far enough to generate a new nodes
 bool isBigTrafo(const Eigen::Matrix4f& t);
 bool isBigTrafo(const g2o::SE3Quat& t);
+//! Computes whether the motion per time is bigger than the parameters max_translation_meter and max_rotation_degree define
+bool isSmallTrafo(const g2o::SE3Quat& t, double seconds = 1.0);
 
 
 //bool overlappingViews(LoadedEdge3D edge);
@@ -65,7 +72,7 @@ cv::FeatureDetector* createDetector( const std::string& detectorType );
 /// Create an object to extract features at keypoints. The Exctractor is passed to the Node constructor and must be the same for each node.
 cv::DescriptorExtractor* createDescriptorExtractor( const std::string& descriptorType );
 ///Convert the CV_32FC1 image to CV_8UC1 with a fixed scale factor
-void depthToCV8UC1(const cv::Mat& float_img, cv::Mat& mono8_img);
+void depthToCV8UC1(cv::Mat& float_img, cv::Mat& mono8_img);
 
 ///Return the macro string for the cv::Mat type integer
 std::string openCVCode2String(unsigned int code);
@@ -86,4 +93,28 @@ double errorFunction2(const Eigen::Vector4f& x1,
 
 float getMinDepthInNeighborhood(const cv::Mat& depth, cv::Point2f center, float diameter);
 
+void observationLikelihood(const Eigen::Matrix4f& proposed_transformation,//new to old
+                             pointcloud_type::Ptr new_pc,
+                             pointcloud_type::Ptr old_pc,
+                             double& likelihood, 
+                             double& confidence,
+                             unsigned int& inliers,
+                             unsigned int& outliers,
+                             unsigned int& occluded,
+                             unsigned int& all) ;
+
+/** This function computes the p-value of the null hypothesis that the transformation is the true one.
+ * It is too sensitive to outliers
+ */
+double rejectionSignificance(const Eigen::Matrix4f& proposed_transformation,//new to old
+                             pointcloud_type::Ptr new_pc,
+                             pointcloud_type::Ptr old_pc);
+
+///Quality is output param
+bool observation_criterion_met(unsigned int inliers, unsigned int outliers, unsigned int all, double& quality);
+
+/*
+cv::Point nearest_neighbor(const cv::Mat source&, const cv::Mat& destination, const Eigen::Matrix4f& transformation_source_to_destination, cv::Point query_point);
+Eigen::Vector3f nearest_neighbor(const cv::Mat source&, const cv::Mat& destination, const Eigen::Matrix4f& transformation_source_to_destination, Eigen::Vector3f query_point);
+*/
 #endif

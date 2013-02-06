@@ -26,23 +26,29 @@
 //TODO:
 //better potential-edge-selection through flann
 //Better separation of function, communication, parameters and gui
+//Is the display of the point clouds without optimization bad, because the transformation to the last_matching_node_ is used but something else is computed?
+//Downsampling in createXYZRGBPointCloud -> Affects the camera calibration data in observationLikelihood
 
 ///Connect Signals and Slots for the ui control
 void ui_connections(QObject* ui, GraphManager* graph_mgr, OpenNIListener* listener)
 {
-    QObject::connect(ui, SIGNAL(reset()), graph_mgr, SLOT(reset()));
-    QObject::connect(ui, SIGNAL(optimizeGraph()), graph_mgr, SLOT(optimizeGraph()));
-    QObject::connect(ui, SIGNAL(togglePause()), listener, SLOT(togglePause()));
-    QObject::connect(ui, SIGNAL(toggleBagRecording()), listener, SLOT(toggleBagRecording()));
-    QObject::connect(ui, SIGNAL(getOneFrame()), listener, SLOT(getOneFrame()));
-    QObject::connect(ui, SIGNAL(deleteLastFrame()), graph_mgr, SLOT(deleteLastFrame()));
-    QObject::connect(ui, SIGNAL(sendAllClouds()), graph_mgr, SLOT(sendAllClouds()));
-    QObject::connect(ui, SIGNAL(saveAllClouds(QString)), graph_mgr, SLOT(saveAllClouds(QString)));
-    QObject::connect(ui, SIGNAL(saveAllFeatures(QString)), graph_mgr, SLOT(saveAllFeatures(QString)));
-    QObject::connect(ui, SIGNAL(saveIndividualClouds(QString)), graph_mgr, SLOT(saveIndividualClouds(QString)));
-    QObject::connect(ui, SIGNAL(setMaxDepth(float)), graph_mgr, SLOT(setMaxDepth(float)));
-    QObject::connect(ui, SIGNAL(saveTrajectory(QString)), graph_mgr, SLOT(saveTrajectory(QString)));
-    QObject::connect(ui, SIGNAL(toggleMapping(bool)), graph_mgr, SLOT(toggleMapping(bool)));
+  Qt::ConnectionType ctype = Qt::AutoConnection;
+  if (ParameterServer::instance()->get<bool>("concurrent_io")) 
+    ctype = Qt::DirectConnection;
+  QObject::connect(ui, SIGNAL(reset()), graph_mgr, SLOT(reset()), ctype);
+  QObject::connect(ui, SIGNAL(optimizeGraph()), graph_mgr, SLOT(optimizeGraph()), ctype);
+  QObject::connect(ui, SIGNAL(togglePause()), listener, SLOT(togglePause()), ctype);
+  QObject::connect(ui, SIGNAL(toggleBagRecording()), listener, SLOT(toggleBagRecording()), ctype);
+  QObject::connect(ui, SIGNAL(getOneFrame()), listener, SLOT(getOneFrame()), ctype);
+  QObject::connect(ui, SIGNAL(deleteLastFrame()), graph_mgr, SLOT(deleteLastFrame()), ctype);
+  QObject::connect(ui, SIGNAL(sendAllClouds()), graph_mgr, SLOT(sendAllClouds()), ctype);
+  QObject::connect(ui, SIGNAL(saveAllClouds(QString)), graph_mgr, SLOT(saveAllClouds(QString)), ctype);
+  QObject::connect(ui, SIGNAL(saveOctomapSig(QString)), graph_mgr, SLOT(saveOctomap(QString)), ctype);
+  QObject::connect(ui, SIGNAL(saveAllFeatures(QString)), graph_mgr, SLOT(saveAllFeatures(QString)), ctype);
+  QObject::connect(ui, SIGNAL(saveIndividualClouds(QString)), graph_mgr, SLOT(saveIndividualClouds(QString)), ctype);
+  QObject::connect(ui, SIGNAL(saveTrajectory(QString)), graph_mgr, SLOT(saveTrajectory(QString)), ctype);
+  QObject::connect(ui, SIGNAL(toggleMapping(bool)), graph_mgr, SLOT(toggleMapping(bool)), ctype);
+  QObject::connect(ui, SIGNAL(saveG2OGraph(QString)), graph_mgr, SLOT(saveG2OGraph(QString)), ctype);
 }
 
 ///Connect Signals and Slots only relevant for the graphical interface
@@ -52,19 +58,26 @@ void gui_connections(Graphical_UI* gui, GraphManager* graph_mgr, OpenNIListener*
     QObject::connect(listener,  SIGNAL(newFeatureFlowImage(QImage)), gui, SLOT(setFeatureFlowImage(QImage)));
     QObject::connect(listener,  SIGNAL(newDepthImage(QImage)), gui, SLOT(setDepthImage(QImage)));
     QObject::connect(graph_mgr, SIGNAL(sendFinished()), gui, SLOT(sendFinished()));
+    QObject::connect(graph_mgr, SIGNAL(iamBusy(int, const char*, int)), gui, SLOT(showBusy(int, const char*, int)));
+    QObject::connect(graph_mgr, SIGNAL(progress(int, const char*, int)), gui, SLOT(setBusy(int, const char*, int)));
     QObject::connect(graph_mgr, SIGNAL(setGUIInfo(QString)), gui, SLOT(setInfo(QString)));
     QObject::connect(graph_mgr, SIGNAL(setGUIStatus(QString)), gui, SLOT(setStatus(QString)));
     QObject::connect(gui, SIGNAL(printEdgeErrors(QString)), graph_mgr, SLOT(printEdgeErrors(QString)));
     QObject::connect(gui, SIGNAL(pruneEdgesWithErrorAbove(float)), graph_mgr, SLOT(pruneEdgesWithErrorAbove(float)));
+    QObject::connect(gui, SIGNAL(clearClouds()), graph_mgr, SLOT(clearPointClouds()));
     if (ParameterServer::instance()->get<bool>("use_glwidget") && gui->getGLViewer() != NULL) {
       GLViewer* glv = gui->getGLViewer();
-	    QObject::connect(graph_mgr, SIGNAL(setPointCloud(pointcloud_type *, QMatrix4x4)), glv, SLOT(addPointCloud(pointcloud_type *, QMatrix4x4))); //, Qt::DirectConnection);
-	    QObject::connect(graph_mgr, SIGNAL(setGraphEdges(QList<QPair<int, int> >*)), glv, SLOT(setEdges(QList<QPair<int, int> >*)));
+	    QObject::connect(graph_mgr, SIGNAL(setPointCloud(pointcloud_type *, QMatrix4x4)), glv, SLOT(addPointCloud(pointcloud_type *, QMatrix4x4)), Qt::BlockingQueuedConnection ); //Needs to block, otherwise the opengl list compilation makes the app unresponsive. This effectively throttles the processing rate though
+      typedef const std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> >* cnst_ft_vectors;
+	    QObject::connect(graph_mgr, SIGNAL(setFeatures(const std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> >*)), glv, SLOT(addFeatures(const std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> >*))); //, Qt::DirectConnection);
+	    QObject::connect(graph_mgr, SIGNAL(setGraphEdges(const QList<QPair<int, int> >*)), glv, SLOT(setEdges(const QList<QPair<int, int> >*)));
 	    QObject::connect(graph_mgr, SIGNAL(updateTransforms(QList<QMatrix4x4>*)), glv, SLOT(updateTransforms(QList<QMatrix4x4>*)));
       QObject::connect(graph_mgr, SIGNAL(deleteLastNode()), glv, SLOT(deleteLastNode()));
 	    QObject::connect(graph_mgr, SIGNAL(resetGLViewer()),  glv, SLOT(reset()));
       if(!ParameterServer::instance()->get<bool>("store_pointclouds")) {
-          QObject::connect(glv, SIGNAL(cloudRendered(pointcloud_type const *)), graph_mgr, SLOT(cloudRendered(pointcloud_type const *))); // 
+          QObject::connect(glv, SIGNAL(cloudRendered(pointcloud_type const *)), graph_mgr, SLOT(clearPointCloud(pointcloud_type const *))); // 
+      } else if(ParameterServer::instance()->get<double>("voxelfilter_size") > 0.0) {
+          QObject::connect(glv, SIGNAL(cloudRendered(pointcloud_type const *)), graph_mgr, SLOT(reducePointCloud(pointcloud_type const *))); // 
       }
     }
     QObject::connect(listener, SIGNAL(setGUIInfo(QString)), gui, SLOT(setInfo(QString)));
@@ -92,12 +105,16 @@ int main(int argc, char** argv)
   //Depending an use_gui on the Parameter Server, a gui- or a headless application is used
   QApplication app(argc, argv, ParameterServer::instance()->get<bool>("use_gui")); 
 
-  GraphManager graph_mgr(qtRos.getNodeHandle());
-
+  GraphManager graph_mgr;
   //Instantiate the kinect image listener
-  OpenNIListener listener(qtRos.getNodeHandle(), &graph_mgr);
-  QObject::connect(&listener, SIGNAL(bagFinished()), &qtRos, SLOT(quitNow()));
-
+  OpenNIListener listener(&graph_mgr);
+  std::string bagfile_name = ParameterServer::instance()->get<std::string>("bagfile_name");
+  if(!bagfile_name.empty()) 
+  {
+    QObject::connect(&listener, SIGNAL(bagFinished()), &app, SLOT(quit()));
+    QObject::connect(&listener, SIGNAL(bagFinished()), &qtRos, SLOT(quitNow()));
+    QtConcurrent::run(&listener, &OpenNIListener::loadBag, bagfile_name);
+  }
 
   Graphical_UI* gui = NULL;
 	if (app.type() == QApplication::GuiClient){
@@ -106,7 +123,7 @@ int main(int argc, char** argv)
       gui_connections(gui, &graph_mgr, &listener);
       ui_connections(gui, &graph_mgr, &listener);//common connections for the user interfaces
   } else {
-      ROS_WARN("Running without graphical user interface! See README for how to interact with RGBDSLAM.");
+      ROS_WARN("Running without graphical user interface! See README or wiki page for how to interact with RGBDSLAM.");
   }
   //Create Ros service interface with or without gui
   RosUi ui("rgbdslam"); //ui namespace for service calls
@@ -115,22 +132,11 @@ int main(int argc, char** argv)
   //If one thread receives a exit signal from the user, signal the other thread to quit too
   QObject::connect(&app, SIGNAL(aboutToQuit()), &qtRos, SLOT(quitNow()));
   QObject::connect(&qtRos, SIGNAL(rosQuits()), &app, SLOT(quit()));
-  QObject::connect(&listener, SIGNAL(bagFinished()), &app, SLOT(quit()));
-
-
-
-#ifdef USE_ICP_BIN
-  ROS_INFO_COND(ParameterServer::instance()->get<bool>("use_icp"), "ICP activated via external binary");
-#endif
-#ifdef USE_ICP_CODE
-  ROS_INFO_COND(ParameterServer::instance()->get<bool>("use_icp"), "ICP activated via linked library");
-#endif
 
   qtRos.start();// Run main loop.
   app.exec();
-  if(ros::ok()) ros::shutdown();//If not yet done through the qt connection
-  ros::waitForShutdown(); //not sure if necessary. 
-  //delete gui;
+  //if(ros::ok()) ros::shutdown();//If not yet done through the qt connection
+  //ros::waitForShutdown(); //not sure if necessary. 
 }
 
 
