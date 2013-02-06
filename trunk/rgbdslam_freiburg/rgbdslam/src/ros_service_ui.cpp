@@ -28,6 +28,11 @@ RosUi::RosUi(const char* service_namespace) : filename("quicksave.pcd"), record_
     this->pause_on = ParameterServer::instance()->get<bool>("start_paused");
 }
 
+void RosUi::reloadConfig() {
+    ParameterServer::instance()->getValues();
+    ROS_INFO("Reloaded Parameters from Parameter Server");
+}
+
 void RosUi::resetCmd() {
     ROS_INFO("Graph Reset");
     Q_EMIT reset();
@@ -42,6 +47,11 @@ void RosUi::quickSaveAll() {
 void RosUi::saveFeatures() {
     Q_EMIT saveAllFeatures(QString("feature_database.yml"));
     ROS_INFO("Saving Whole Model to %s", qPrintable(filename));
+}
+
+void RosUi::saveOctomap() {
+    Q_EMIT saveOctomapSig("/tmp/rgbdslam_octomap.ot");
+    ROS_INFO("Saving Whole Model to /tmp/rgbdslam_octomap.ot");
 }
 
 void RosUi::saveAll() {
@@ -121,14 +131,17 @@ bool RosUi::services(rgbdslam::rgbdslam_ros_ui::Request  &req,
     else if(req.comand == "quick_save"     ){ quickSaveAll(); }
     else if(req.comand == "save_cloud"     ){ saveAll(); }
     else if(req.comand == "save_features"  ){ saveFeatures(); }
+    else if(req.comand == "save_g2o_graph" ){ Q_EMIT saveG2OGraph("graph.g2o"); }
     else if(req.comand == "save_trajectory"){ Q_EMIT saveTrajectory("trajectory"); }
     else if(req.comand == "save_individual"){ saveIndividual(); }
     else if(req.comand == "send_all"       ){ sendAll(); }
     else if(req.comand == "frame"          ){ getOneFrame(); }
     else if(req.comand == "delete_frame"   ){ deleteLastFrame(); }
-    else if(req.comand == "delete_frame"   ){ Q_EMIT optimizeGraph(); }
+    else if(req.comand == "optimize"       ){ Q_EMIT optimizeGraph(); }
+    else if(req.comand == "reload_config"  ){ reloadConfig(); }
     else{
-        ROS_ERROR("Valid commands are: {reset, quick_save, save_all, save_individual, send_all, delete_frame}");
+        ROS_ERROR("Invalid service call commands: %s", req.comand.c_str());
+        ROS_INFO("Valid commands are: {\n - reset\n -  quick_save\n -  save_all\n -  save_individual\n -  send_all\n -  delete_frame\n -  optimize\n -  reload_config\n - save_g2o_graph\n - save_trajectory\n}");
         return false;
     }
     return true;
@@ -142,7 +155,8 @@ bool RosUi::services_b(rgbdslam::rgbdslam_ros_ui_b::Request  &req,
     else if(req.comand == "mapping"){ Q_EMIT toggleMapping(req.value); }
     else if(req.comand == "store_pointclouds"){ toggleCloudStorage(req.value); }
     else{
-        ROS_ERROR("Valid commands are: {pause, record}");
+        ROS_ERROR("Invalid service call commands: %s", req.comand.c_str());
+        ROS_ERROR("Valid commands are: {pause, record, mapping, store_pointclouds}");
         return false;
     }
   return true;

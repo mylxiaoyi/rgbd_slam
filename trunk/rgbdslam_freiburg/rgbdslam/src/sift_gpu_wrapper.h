@@ -93,15 +93,15 @@ private:
 	 */
 	void writePGM(FILE *fp, unsigned char* data, int width, int height);
 
-	static const int imageWidth = 640;          ///<width of the image constant for Kinect
-	static const int imageHeight = 480;         ///<height of the image constant for Kinect
+	mutable int imageWidth;          ///<width of the image constant for Kinect
+	mutable int imageHeight;         ///<height of the image constant for Kinect
+	mutable unsigned char* data;     ///<image as texture
 
 	static SiftGPUWrapper* instance;    ///<singleton instance
 	SiftGPU* siftgpu;                           ///<siftgpu instance
 	SiftMatchGPU *matcher;                      ///<siftgpu matcher
 	bool isMatcherInitialized;                  ///<true, if matcher was initialized
 	bool error;                                 ///<error happened?
-	unsigned char* data;                        ///<image as texture
   mutable QMutex gpu_mutex;
 };
 

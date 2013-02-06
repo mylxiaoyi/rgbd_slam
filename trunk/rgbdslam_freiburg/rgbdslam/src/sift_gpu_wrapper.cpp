@@ -21,14 +21,17 @@
 #include <ros/ros.h>
 #include <stdio.h>
 #include "parameter_server.h"
-
+#include "scoped_timer.h"
 using namespace cv;
 
 SiftGPUWrapper* SiftGPUWrapper::instance = NULL;
 
 SiftGPUWrapper::SiftGPUWrapper() {
     gpu_mutex.lock();
+    data = NULL;
     error = false;
+    imageHeight = 0;
+    imageWidth = 0;
     siftgpu = new SiftGPU();
 
 #if defined(SIFT_GPU_MODE) and SIFT_GPU_MODE == 1
@@ -43,15 +46,15 @@ SiftGPUWrapper::SiftGPUWrapper() {
     sprintf(max_feat_char, "%d", max_features);
     //ROS_INFO("Max_feat_char %s", max_feat_char);
     char subpixelKey[] = {"-s"};
-    char subpixelValue[] = {"1"};
+    char subpixelValue[] = {"0"};
     char max_flag[] = {"-tc2"};
     //char resize_storage_on_demand[] = {"-tight"};
-    //char unnormalized_descriptors[] = {"-unn"};
+    char unnormalized_descriptors[] = {"-unn"};
     char verbosity[] = {"-v"};//nothing but errors
     char verbosity_val[] = {"0"};//nothing but errors
     //char * argv[] = {method, "-t", "10", subpixelKey, subpixelValue, max_flag, max_feat_char};
     char first_octave[] = {"-fo"};
-    char first_octave_val[] = {"-1"};
+    char first_octave_val[] = {"0"};
     char * argv[] = {method,  subpixelKey, subpixelValue, \
                      max_flag, max_feat_char, first_octave,  \
                      first_octave_val, verbosity, verbosity_val}; /*, resize_storage_on_demand};
@@ -64,7 +67,6 @@ SiftGPUWrapper::SiftGPUWrapper() {
         error = true;
     }
 
-    data = (unsigned char*) malloc(imageWidth * imageHeight);
 
     isMatcherInitialized = false;
     gpu_mutex.unlock();
@@ -94,12 +96,19 @@ SiftGPUWrapper* SiftGPUWrapper::getInstance() {
 }
 
 void SiftGPUWrapper::detect(const cv::Mat& image, cv::vector<cv::KeyPoint>& keypoints, std::vector<float>& descriptors, const Mat& mask) const {
+    ScopedTimer s(__FUNCTION__);
     if (error) {
         keypoints.clear();
         ROS_FATAL("SiftGPU cannot be used. Detection of keypoints failed");
     }
 
     //get image
+    if(image.rows != imageHeight || image.cols != imageWidth){
+      imageHeight = image.rows;
+      imageWidth = image.cols;
+      free(data);
+      data = (unsigned char*) malloc(imageWidth * imageHeight);
+    }
     cvMatToSiftGPU(image, data);
 
     int num_features = 0;
@@ -125,7 +134,6 @@ void SiftGPUWrapper::detect(const cv::Mat& image, cv::vector<cv::KeyPoint>& keyp
         keypoints.push_back(key);
     }
     gpu_mutex.unlock();
-
 }
 
 int SiftGPUWrapper::match(
@@ -192,17 +200,17 @@ void SiftGPUWrapper::initializeMatcher() {
     gpu_mutex.lock();
     matcher = CreateNewSiftMatchGPU(4096);
     if (!matcher->VerifyContextGL()) {
-        ROS_FATAL("Can't create OpenGL context! SiftGPU Matcher cannot be used.");
+        ROS_FATAL("Can't create OpenGL context! SiftGPU Matcher cannot be used.\nYou probably have no OpenGL support. You can use a different type of matcher though, e.g. FLANN.");
         error = true;
         return;
     }
-    ROS_INFO("matcher - ok");
+    ROS_INFO("SiftGPU matcher initialized successfully.");
     isMatcherInitialized = true;
     gpu_mutex.unlock();
 }
 
-void SiftGPUWrapper::cvMatToSiftGPU(const Mat& image,
-        unsigned char* siftImage) const {
+void SiftGPUWrapper::cvMatToSiftGPU(const Mat& image, unsigned char* siftImage) const {
+    ScopedTimer s(__FUNCTION__);
     Mat tmp;
     image.convertTo(tmp, CV_8U);
     for (int y = 0; y < tmp.rows; ++y) {

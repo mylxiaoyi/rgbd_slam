@@ -56,6 +56,7 @@ void saveCloud(const char* filename, const pointcloud_type& pc, const int max_cn
 
         
         of << p.x << "\t" << p.y << "\t" << p.z;
+        /*
         if (color) {
         	
         	int color = *reinterpret_cast<const int*>(&p.rgb); 
@@ -65,6 +66,7 @@ void saveCloud(const char* filename, const pointcloud_type& pc, const int max_cn
         	of << "\t \t" << r << "\t" << g << "\t" << b << "\t" << endl;
         }	
         else
+        */
         	of << endl;
        // cout << p.x << "\t" << p.y << "\t" << p.z << endl;
                        

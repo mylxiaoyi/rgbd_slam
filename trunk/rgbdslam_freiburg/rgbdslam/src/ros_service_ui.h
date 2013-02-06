@@ -57,8 +57,11 @@ Q_SIGNALS:
     void sendAllClouds(); ///< Signifies the sending of the whole model
     ///User wants the current world model to be saved to a pcd-file or ply file
     void saveAllClouds(QString filename);
+    void saveOctomapSig(QString filename);
     ///User wants the feature locations and descriptions saved to yaml or xml file
     void saveAllFeatures(QString filename);
+    ///User wants the g2o graph saved 
+    void saveG2OGraph(QString filename);
     ///User wants the current world model to be saved to one pcd-file per node
     void saveIndividualClouds(QString file_basename);
     void setMaxDepth(float max_depth);
@@ -71,9 +74,11 @@ public Q_SLOTS:
 
 private:
     void resetCmd();
+    void reloadConfig();
     void sendAll();
     void setMax(float val);
     void saveAll();
+    void saveOctomap();
     void saveFeatures();
     void saveIndividual();
     void quickSaveAll();

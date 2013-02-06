@@ -17,11 +17,10 @@ endif ("${ROS_PARALLEL_JOBS}" EQUAL "")
 #########################################################
 #########################################################
 
+set(ROS_COMPILE_FLAGS ${ROS_COMPILE_FLAGS} -fopenmp)
 
 cmake_minimum_required(VERSION 2.4.6)
 include($ENV{ROS_ROOT}/core/rosbuild/rosbuild.cmake)
-
-
 
 # Set the build type.  Options are:
 #  Coverage       : w/ debug symbols, w/o optimization, w/ code-coverage
@@ -29,9 +28,12 @@ include($ENV{ROS_ROOT}/core/rosbuild/rosbuild.cmake)
 #  Release        : w/o debug symbols, w/ optimization
 #  RelWithDebInfo : w/ debug symbols, w/ optimization
 #  MinSizeRel     : w/o debug symbols, w/ optimization, stripped binaries
-set(ROS_BUILD_TYPE Release)
+set(ROS_BUILD_TYPE RelWithDebInfo)
+#add_definitions(-DROSCONSOLE_SEVERITY_INFO)
+IF (${USE_GL2PS})
+  add_definitions(-DGL2PS)
+ENDIF (${USE_GL2PS})
 set(CMAKE_CXX_FLAGS "-O3")
-add_definitions(-DROSCONSOLE_SEVERITY_INFO)
 #is used for compiling the libraries 
 set(USE_GICP 0)
 IF (${USE_GICP_BIN} OR ${USE_GICP_CODE})
@@ -56,8 +58,6 @@ rosbuild_gensrv()
 #rosbuild_link_boost(${PROJECT_NAME} thread)
 #rosbuild_add_executable(example examples/example.cpp)
 
-find_package(libg2o REQUIRED)
-include_directories(/usr/include/suitesparse)
 
 ##############################################################################
 # Required 3rd party
@@ -84,6 +84,12 @@ LINK_DIRECTORIES(${LIBRARY_OUTPUT_PATH})
 SET(${CMAKE_LIBRARY_PATH} ${LIBRARY_OUTPUT_PATH})
 #SET(CMAKE_INCLUDE_DIRECTORIES_PROJECT_BEFORE TRUE)
 
+find_package(libg2o REQUIRED)
+ADD_DEFINITIONS(-DDO_FEATURE_OPTIMIZATION)
+
+
+#Only possible when not subscribing to point cloud topic. Possibly dangerous anyway, but halves storage space per point cloud
+#ADD_DEFINITIONS(-DRGB_IS_4TH_DIM) 
 
 
 #############################
@@ -153,7 +159,8 @@ ENDIF (${USE_GICP_CODE})
 # OpenCV ####################
 #############################
 find_package(OpenCV)
-include_directories(${OpenCV_INCLUDE_DIRS} external/)
+#include_directories(${OpenCV_INCLUDE_DIRS} external/ /usr/include/suitesparse/)
+include_directories(${OpenCV_INCLUDE_DIRS} external/ /usr/include/suitesparse/)
 
 #############################
 # Eigen ####################
@@ -181,7 +188,8 @@ QT4_WRAP_CPP(QT_MOC_HPP ${QT_MOC})
 ##############################################################################
 # Sources to Compile
 ##############################################################################
-SET(ADDITIONAL_SOURCES src/gicp-fallback.cpp src/main.cpp src/qtros.cpp  src/openni_listener.cpp src/qt_gui.cpp src/flow.cpp src/node.cpp src/graph_manager.cpp src/glviewer.cpp src/parameter_server.cpp src/ros_service_ui.cpp src/misc.cpp)
+SET(ADDITIONAL_SOURCES src/gicp-fallback.cpp src/main.cpp src/qtros.cpp  src/openni_listener.cpp src/qt_gui.cpp src/flow.cpp src/node.cpp src/graph_manager.cpp src/graph_mgr_io.cpp src/glviewer.cpp src/parameter_server.cpp src/ros_service_ui.cpp src/misc.cpp src/landmark.cpp src/loop_closing.cpp src/ColorOctomapServer.cpp src/scoped_timer.cpp)
+SET(ADDITIONAL_SOURCES ${ADDITIONAL_SOURCES} src/transformation_estimation.cpp src/graph_manager2.cpp)
 
 IF (${USE_SIFT_GPU})
  	SET(ADDITIONAL_SOURCES ${ADDITIONAL_SOURCES} src/sift_gpu_wrapper.cpp)
@@ -198,7 +206,7 @@ rosbuild_add_executable(rgbdslam ${QT_SOURCES} ${QT_RESOURCES_CPP} ${QT_FORMS_HP
 #SET(G2O_LIBS cholmod g2o_core g2o_stuff g2o_types_slam3d g2o_solver_cholmod g2o_solver_pcg g2o_solver_csparse cxsparse g2o_incremental)
 SET(G2O_LIBS ${libg2o_LIBRARIES} cholmod cxsparse)
 #SET(LIBS_LINK GL GLU -lgl2ps ${G2O_LIBS} ${QT_LIBRARIES} ${QT_QTOPENGL_LIBRARY} ${GLUT_LIBRARY} ${OPENGL_LIBRARY} ${OpenCV_LIBS})
-SET(LIBS_LINK GL GLU ${G2O_LIBS} ${QT_LIBRARIES} ${QT_QTOPENGL_LIBRARY} ${GLUT_LIBRARY} ${OPENGL_LIBRARY} ${OpenCV_LIBS} -lboost_signals -lrt)
+SET(LIBS_LINK GL GLU ${G2O_LIBS} ${QT_LIBRARIES} ${QT_QTOPENGL_LIBRARY} ${GLUT_LIBRARY} ${OPENGL_LIBRARY} ${OpenCV_LIBS} -lboost_signals -lrt -loctomap -loctomap_server)
 
 IF (${USE_SIFT_GPU})
  	SET(LIBS_LINK ${LIBS_LINK} siftgpu)

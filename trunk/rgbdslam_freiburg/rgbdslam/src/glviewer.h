@@ -43,15 +43,19 @@ public Q_SLOTS:
     void toggleFollowMode(bool on);
     void toggleShowEdges(bool on);
     void toggleShowIDs(bool on);
+    void toggleShowGrid(bool on);
+    void toggleShowTFs(bool on);
     void toggleShowPoses(bool on);
     void toggleShowClouds(bool on);
+    void toggleShowFeatures(bool on);
     void toggleBackgroundColor(bool on);
     void toggleStereo(bool on);
 
     //Formerly called trough qt_gui
     void addPointCloud(pointcloud_type * pc, QMatrix4x4 transform);
+    void addFeatures(const std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> >* feature_locations_3d);
     void updateTransforms(QList<QMatrix4x4>* transforms);
-    void setEdges(QList<QPair<int, int> >* edge_list);
+    void setEdges(const QList<QPair<int, int> >* edge_list);
     void deleteLastNode();
     void reset();
     void toggleTriangulation();
@@ -67,6 +71,7 @@ protected:
     void paintGL();
     void resizeGL(int width, int height);
     void mousePressEvent(QMouseEvent *event);
+    void mouseReleaseEvent(QMouseEvent *event);
     void mouseMoveEvent(QMouseEvent *event);
     void wheelEvent(QWheelEvent *event);
     //!Resets to certain perspectives
@@ -79,25 +84,30 @@ protected:
     void drawAxis(float scale);
     //!Draw pose graph edges in opengl 
     void drawEdges();
+    //!Draw size x size grid into world coordinate system
+    void drawGrid();
     //!Draw a triangle in opengl 
     ///Assumes gl mode for triangles
     void drawTriangle(const point_type& p1, const point_type& p2, const point_type& p3);
     //bool startTriangleStrip(pointcloud_type const * pc, int x, int y, int w, int h, bool& flip);
     ///Compile the pointcloud to a GL Display List
     void pointCloud2GLList(pointcloud_type const * pc);
+    void pointCloud2GLPoints(pointcloud_type * pc);
     void pointCloud2GLStrip(pointcloud_type * pc);
     QImage renderList(QMatrix4x4 transform, int list_id);
     //! Draw the scene. Xshift allows for a camera shift in x direction for the stereo view
     void drawClouds(float xshift);
+    float bg_col_[4];
 
 private:
+    void clearAndUpdate();
     int xRot, yRot, zRot;
     float xTra, yTra, zTra;
-    float bg_col_[4];
     QPoint lastPos;
     GLenum polygon_mode;
     QList<GLuint> cloud_list_indices;
-    QList<QPair<int, int> >* edge_list_;
+    QList<GLuint> feature_list_indices;
+    QList<QPair<int, int> > edge_list_;
     QList<QMatrix4x4>* cloud_matrices;
     QMatrix4x4 viewpoint_tf_;
     //!cam_pose_mat transforms the viewpoint from the origin
@@ -107,14 +117,20 @@ private:
     bool setClickedPosition(int x, int y);
     bool show_poses_;
     bool show_ids_;
+    bool show_grid_;
+    bool show_tfs_;
     bool show_edges_;
     bool show_clouds_;
+    bool show_features_;
     bool follow_mode_;
     bool stereo_;
+    bool black_background_;
     int width_, height_;
     double stereo_shift_, fov_; //field of view
     double rotation_stepping_;
-
+    QWidget* myparent;
+    bool button_pressed_;
+    unsigned int fast_rendering_step_;
 };
 
 #endif

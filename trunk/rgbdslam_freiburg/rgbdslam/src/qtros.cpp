@@ -39,4 +39,7 @@ void QtROS::run(){
     ROS_INFO("ROS-Node Terminated\n"); 
     ros::shutdown();//Not sure if necessary
   }
+  ros::Duration d(0.5);
+  d.sleep();
+  abort();
 }

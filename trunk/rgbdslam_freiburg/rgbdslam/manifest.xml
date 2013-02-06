@@ -1,7 +1,7 @@
 <package>
   <description brief="SLAM on RGBD Data">
     This package can be used to register the point clouds from RGBD sensors such as the kinect or stereo cameras.
-    The rgbdslam node can be connected easily to an octomap_server node to create a memory-efficient 3D map.
+    The created world model can be saved as point cloud or integrated into an octomap.
   </description>
   <author>Felix Endres, Juergen Hess, Nikolas Engelhard</author>
   <license>GPL v3</license>
@@ -17,7 +17,7 @@
   <depend package="cv_bridge"/>
   <depend package="sensor_msgs"/>
   <!--depend package="openni_camera"/-->
-  <!--depend package="octomap_server"/-->
+  <depend package="octomap_server"/>
   <!--depend package="octomap"/-->
   <depend package="geometry_msgs"/>
   <depend package="visualization_msgs"/>

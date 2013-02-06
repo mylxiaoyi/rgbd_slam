@@ -30,6 +30,7 @@
 #include <QGridLayout>
 #include "parameter_server.h"
 #include <QMatrix4x4>
+#include <QMap>
 
 class QAction;
 class QActionGroup;
@@ -37,6 +38,7 @@ class QLabel;
 class QMenu;
 class GLViewer;
 class QSplitter;
+class QProgressBar;
 
 //TODO:
 //Choice between Binary and ASCII outputfiles
@@ -67,16 +69,19 @@ Q_SIGNALS:
     void sendAllClouds(); ///< Signifies the sending of the whole model
     ///User wants the current world model to be saved to a pcd-file or ply file
     void saveAllClouds(QString filename);
+    ///User wants the g2o graph saved 
+    void saveG2OGraph(QString filename);
     void saveAllFeatures(QString filename);
     void saveTrajectory(QString filename);
+    void saveOctomapSig(QString filename);
     ///User wants the current world model to be saved to one pcd-file per node
     void saveIndividualClouds(QString file_basename);
-    void setMaxDepth(float max_depth);
     void evaluation();
     void optimizeGraph();
     void printEdgeErrors(QString);
     void pruneEdgesWithErrorAbove(float);
     void toggleMapping(bool);
+    void clearClouds();
      
 public Q_SLOTS:
     void setVisualImage(QImage);
@@ -84,16 +89,19 @@ public Q_SLOTS:
     void setDepthImage(QImage);
     void sendFinished(); ///< Call to display, that sending finished
     void showOptions();
+    void showBusy(int id, const char* message, int max);
+    void setBusy(int id, const char* message, int val);
 
 private Q_SLOTS:
     void saveVectorGraphic();
     void resetCmd();
     void reloadConfig();
     void sendAll();
-    void setMax();
+    void setParam();///< Show a combobox to select a parameter, then call this->setParam(QString)
     void setStereoShift();
     void setRotationGrid();
     void saveAll();
+    void saveOctomap();
     void saveIndividual();
     void quickSaveAll();
     void saveFeatures();
@@ -109,12 +117,17 @@ private Q_SLOTS:
 //    void set3DDisplay(bool is_on);
     void set2DStream(bool is_on);
     void saveTrajectoryDialog();
+    void saveG2OGraphDialog();
     void optimizeGraphTrig();
     void showEdgeErrors();
     void pruneEdgesWithHighError();
     void toggleFullscreen(bool);
     void toggleCloudStorage(bool);
+    void toggleLandmarkOptimization(bool);
     void toggleMappingPriv(bool);
+    void toggleScreencast(bool);
+    //Display a Dialog to change the value of the mentioned parameter
+    void setParam(QString param_name);
 private:
     //!Menus and Menu elements are defined here
     void createMenus();
@@ -136,6 +149,7 @@ private:
     QString filename;
     GLViewer* glviewer;
     bool pause_on;
+    QMap<int, QProgressBar*> progressbars;
 };
 
 #endif

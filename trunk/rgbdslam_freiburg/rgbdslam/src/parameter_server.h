@@ -24,7 +24,11 @@
 //the visualization too
 #include "pcl/point_cloud.h"
 #include "pcl/point_types.h"
+#ifndef RGB_IS_4TH_DIM
 typedef pcl::PointXYZRGB point_type;
+#else
+typedef pcl::PointXYZ point_type;
+#endif
 typedef pcl::PointCloud<point_type> pointcloud_type;
 //#define CONCURRENT_EDGE_COMPUTATION
 //Compile out DEBUG Statements. Hardly benefitial though
@@ -43,11 +47,11 @@ public:
     static ParameterServer* instance();
 
     /*!
-     * The method returns a value from the local cache.
+     * The method sets a value in the local cache and on the Parameter Server.
      * You can use bool, int, double and std::string for T
      *
      * \param param the name of the parameter
-     * \return the parameter value
+     * \value the new parameter value
      */
     template<typename T>
     void set(const std::string param, T value) {
@@ -62,8 +66,16 @@ public:
           return;
         }
         config[param] = value;
+        setOnParameterServer(pre+param, value);
     }
 
+    /*!
+     * The method returns a value from the local cache.
+     * You can use bool, int, double and std::string for T
+     *
+     * \param param the name of the parameter
+     * \return the parameter value
+     */
     template<typename T>
     T get(const std::string param) {
         if(config.count(param)==0){
@@ -71,7 +83,12 @@ public:
           assert(config.count(param)==0);
         }
         boost::any value = config[param];
-        return boost::any_cast<T>(value);
+        try{
+          return boost::any_cast<T>(value);
+        } catch( boost::bad_any_cast bac){
+          ROS_ERROR_STREAM("Bad cast: Requested data type <" << typeid(T).name() << "> for parameter '" << param << "'");
+          throw; //Programmer needs to fix this. Rethrow.
+        }
     }
 
     /*!
@@ -128,10 +145,14 @@ private:
      */
     template<typename T>
     T getFromParameterServer(const std::string param, T def) {
-        std::string fullParam = param;
         T result;
-        handle.param(fullParam, result, def);
+        handle.param(param, result, def);
         return result;
+    }
+
+    template<typename T>
+    void setOnParameterServer(const std::string param, T new_val) {
+        handle.setParam(param, new_val);
     }
 };
 
