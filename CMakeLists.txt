@@ -206,7 +206,7 @@ rosbuild_add_executable(rgbdslam ${QT_SOURCES} ${QT_RESOURCES_CPP} ${QT_FORMS_HP
 #SET(G2O_LIBS cholmod g2o_core g2o_stuff g2o_types_slam3d g2o_solver_cholmod g2o_solver_pcg g2o_solver_csparse cxsparse g2o_incremental)
 SET(G2O_LIBS ${libg2o_LIBRARIES} cholmod cxsparse)
 #SET(LIBS_LINK GL GLU -lgl2ps ${G2O_LIBS} ${QT_LIBRARIES} ${QT_QTOPENGL_LIBRARY} ${GLUT_LIBRARY} ${OPENGL_LIBRARY} ${OpenCV_LIBS})
-SET(LIBS_LINK GL GLU ${G2O_LIBS} ${QT_LIBRARIES} ${QT_QTOPENGL_LIBRARY} ${GLUT_LIBRARY} ${OPENGL_LIBRARY} ${OpenCV_LIBS} -lboost_signals -lrt -loctomap -loctomap_server)
+SET(LIBS_LINK GL GLU ${G2O_LIBS} ${QT_LIBRARIES} ${QT_QTOPENGL_LIBRARY} ${GLUT_LIBRARY} ${OPENGL_LIBRARY} ${OpenCV_LIBS} -lboost_signals -lrt -loctomap -loctomap_server -loctomath)
 
 IF (${USE_SIFT_GPU})
  	SET(LIBS_LINK ${LIBS_LINK} siftgpu)
