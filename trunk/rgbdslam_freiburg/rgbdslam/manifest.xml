@@ -18,7 +18,7 @@
   <depend package="sensor_msgs"/>
   <!--depend package="openni_camera"/-->
   <depend package="octomap_server"/>
-  <!--depend package="octomap"/-->
+  <depend package="octomap_ros"/>
   <depend package="geometry_msgs"/>
   <depend package="visualization_msgs"/>
   <rosdep name="libqt4-opengl-dev"/>
@@ -29,6 +29,7 @@
   <!--rosdep name="gl2ps"/-->
   <rosdep name="eigen"/>
   <rosdep name="libg2o"/>
+  <rosdep name="octomap"/>
   <export>
     <rosdoc config="rosdoc.yaml" />
     <nodelet plugin="${prefix}/nodelet_plugins.xml" />
