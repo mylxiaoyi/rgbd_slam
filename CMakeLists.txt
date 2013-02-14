@@ -64,6 +64,14 @@ rosbuild_gensrv()
 ##############################################################################
 
 #############################
+# Octomap ###################
+#############################
+find_package(octomap REQUIRED)
+include_directories(${OCTOMAP_INCLUDE_DIRS})
+link_directories(${OCTOMAP_LIBRARY_DIRS})
+link_libraries(${OCTOMAP_LIBRARIES})
+
+#############################
 # Qt ########################
 #############################
 # http://qtnode.net/wiki/Qt4_with_cmake

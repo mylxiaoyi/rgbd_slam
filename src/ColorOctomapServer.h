@@ -3,6 +3,7 @@
 
 #include <octomap_server/OctomapServer.h>
 #include <octomap/ColorOcTree.h>
+#include <octomap_ros/OctomapROS.h>
 #include "parameter_server.h"
 #include <qtconcurrentrun.h>
 
