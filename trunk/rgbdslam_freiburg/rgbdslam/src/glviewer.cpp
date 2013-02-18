@@ -117,7 +117,6 @@ void GLViewer::setXRotation(int angle) {
     qNormalizeAngle(angle);
     if (angle != xRot) {
         xRot = angle;
-        clearAndUpdate();
     }
 }
 
@@ -126,7 +125,6 @@ void GLViewer::setYRotation(int angle) {
     qNormalizeAngle(angle);
     if (angle != yRot) {
         yRot = angle;
-        clearAndUpdate();
     }
 }
 
@@ -143,7 +141,6 @@ void GLViewer::setZRotation(int angle) {
     qNormalizeAngle(angle);
     if (angle != zRot) {
         zRot = angle;
-        clearAndUpdate();
     }
 }
 
@@ -529,12 +526,12 @@ void GLViewer::mouseMoveEvent(QMouseEvent *event) {//TODO: consolidate setRotati
         case Qt::ShiftModifier:  
             xTra += dx/200.0;
             yTra -= dy/200.0;
-            clearAndUpdate();
       }
+      clearAndUpdate();
     } else if (event->buttons() & Qt::MidButton) {
             xTra += dx/200.0;
             yTra -= dy/200.0;
-            clearAndUpdate();
+      clearAndUpdate();
     }
 
     lastPos = event->pos();
