@@ -82,10 +82,10 @@ USAGE without GUI ##############################################################
 The RosUI is an alternative to the Grapical_UI to run the rgbdslam headless,
 for example on the PR2.  rgbdslam can then be used via service-calls.
 The possible calls are:
-- /rgbdslam/ros_ui   {reset,  quick_save,  send_all,  delete_frame,  optimize,  reload_config, save_trajectory}
-- /rgbdslam/ros_ui_b {pause, record} {true, false}
-- /rgbdslam/ros_ui_f {set_max} {float}
-- /rgbdslam/ros_ui_s {save_octomap,  save_cloud,  save_g2o_graph,  save_trajectory,  save_features,  save_individual} {filename}
+ * /rgbdslam/ros_ui   {reset,  quick_save,  send_all,  delete_frame,  optimize,  reload_config, save_trajectory}
+ * /rgbdslam/ros_ui_b {pause, record} {true, false}
+ * /rgbdslam/ros_ui_f {set_max} {float}
+ * /rgbdslam/ros_ui_s {save_octomap,  save_cloud,  save_g2o_graph,  save_trajectory,  save_features,  save_individual} {filename}
 
 To start the rgbdslam headless use the headless.launch: 
 $ roslaunch rgbdslam headless.launch
