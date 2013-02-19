@@ -596,6 +596,7 @@ void Graphical_UI::createMenus() {
     //Processing Menu
     actionMenu = menuBar()->addMenu(tr("&Processing"));
 
+    /*
     QAction *newAct;
     newAct = new QAction(tr("&Reset"), this);
     newAct->setShortcut(QString("Ctrl+R"));
@@ -604,6 +605,7 @@ void Graphical_UI::createMenus() {
     connect(newAct, SIGNAL(triggered()), this, SLOT(resetCmd()));
     actionMenu->addAction(newAct);
     this->addAction(newAct);
+    */
 
     QAction *pauseAct = new QAction(tr("&Process"), this);
     pauseAct->setShortcut(QString(" "));

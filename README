@@ -107,20 +107,32 @@ $ rosservice call /rgbdslam/ros_ui_s save_cloud
 Every pointcloud in its own file in rgbdslam/bin-directory: 
 $ rosservice call /rgbdslam/ros_ui save_individual
 
-/rgbdslam/ros_ui: -reset	resets the graph, delets all nodes (refreshes only when capturing new images) 
-                  -quick_save, save_cloud	saves all pointclouds in one file quicksave.pcd in rgbdslam/bin-directory 
-                  -send_all	sends all pointclouds to /rgbdslam/transformed_cloud (can be visualized with rviz) 
-                  -delete_frame	delete the last frame from the graph (refreshes only when capturing new images)
-	
-/rgbdslam/ros_ui_b: -pause	pauses or resumes the capturing of images 
-                    -record pauses or stops the recording of bag-files, can be found in the rgbdslam/bin-directory
-	
-/rgbdslam/ros_ui_f: -set_max	filters out all datapoints further away than this value (in cm, only for saving to files)
+/rgbdslam/ros_ui: 
 
-/rgbdslam/ros_ui_s: -save_features saves the feature locations and descriptors in a yaml file with the given filename
-                    -save_cloud	saves the cloud to the given filename (should end with .ply or .pcd)
-                    -save_individual	saves every scan in its own file (appends a suffix to the given filename)
-                    -save_octomap	saves the cloud to the given filename
+ * reset	''resets the graph, delets all nodes (refreshes only when capturing new images)''
+ * frame	''capture one frame from the sensor''
+ * optimize	''trigger graph optimizer''
+ * reload_config	''reloads the paramters from the ROS paramter server''
+ * quick_save ''saves all pointclouds in one file quicksave.pcd in rgbdslam/bin-directory''
+ * send_all	''sends all pointclouds to /rgbdslam/transformed_cloud (can be visualized with rviz)''
+ * delete_frame	''delete the last frame from the graph (refreshes only when capturing new images)''
+	
+/rgbdslam/ros_ui_b: 
+
+ * pause <flag>	''pauses or resumes the capturing of images'' 
+ * record <flag>  ''pauses or stops the recording of bag-files, can be found in the rgbdslam/bin-directory''
+	
+/rgbdslam/ros_ui_f: 
+
+ * set_max <float>	''filters out all datapoints further away than this value (in cm, only for saving to files)''
+
+/rgbdslam/ros_ui_s: 
+
+ * save_features <filname> ''saves the feature locations and descriptors in a yaml file with the given filename''
+ * save_cloud	<filename> ''saves the cloud to the given filename (should end with .ply or .pcd)''
+ * save_individual <fileprefix>	''saves every scan in its own file (appending a suffix to the given prefix)''
+ * save_octomap	<filename> ''saves the cloud to the given filename''
+ * save_trajectory	<fileprefix> ''saves the sensor trajectory to the file <fileprefix>_estimate.txt''
 
 
 

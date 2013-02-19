@@ -28,7 +28,7 @@ void ParameterServer::defaultConfig() {
   addOption("topic_points",                  std::string(""),                           "If omitted, xyz will be computed from depth image. ");
   addOption("wide_topic",                    std::string(""),                           "Topics for stereo cam, e.g. /wide_stereo/left/image_mono");
   addOption("wide_cloud_topic",              std::string(""),                           "Topics for stereo cam e.g. /wide_stereo/points2");
-  addOption("subscriber_queue_size",         static_cast<int> (3),                      "Cache incoming data (carefully, RGB-D Clouds are 10MB each)");
+  addOption("subscriber_queue_size",         static_cast<int> (4),                      "Cache incoming data (carefully, RGB-D Clouds are 10MB each)");
   addOption("drop_async_frames",             static_cast<bool> (false),                 "Check timestamps of depth and visual image, reject if not in sync ");
   addOption("depth_scaling_factor",          static_cast<double> (1.0),                 "Some kinects have a wrongly scaled depth");
   addOption("bagfile_name",                  std::string(""),                           "Read data from a bagfile, make sure to enter the right topics above");

@@ -78,7 +78,7 @@ bool RosUi::services(rgbdslam::rgbdslam_ros_ui::Request  &req,
   else{
       ROS_ERROR("Invalid service call command: %s", req.command.c_str());
       ROS_ERROR("RGBDSLAM's services have changed in Feb '13, please revise your service calls");
-      ROS_INFO("Valid commands are: {\n - reset\n -  quick_save\n -  send_all\n -  delete_frame\n -  optimize\n -  reload_config\n - save_trajectory\n}");
+      ROS_INFO("Valid commands are: {\n - reset\n - frame\n - quick_save\n -  send_all\n -  delete_frame\n -  optimize\n -  reload_config\n - save_trajectory\n}");
       return false;
   }
   return true;
