@@ -28,7 +28,7 @@ RosUi::RosUi(const char* service_namespace) : filename("quicksave.pcd"), record_
     server   = n.advertiseService("ros_ui",   &RosUi::services,   this);
     server_b = n.advertiseService("ros_ui_b", &RosUi::services_b, this);
     server_f = n.advertiseService("ros_ui_f", &RosUi::services_f, this);
-    server_s = n.advertiseService("ros_ui_f", &RosUi::services_s, this);
+    server_s = n.advertiseService("ros_ui_s", &RosUi::services_s, this);
     this->pause_on = ParameterServer::instance()->get<bool>("start_paused");
 }
 
