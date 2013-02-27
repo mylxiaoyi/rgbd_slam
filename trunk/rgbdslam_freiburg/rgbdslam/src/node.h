@@ -83,11 +83,11 @@ public:
   ///Transform, e.g., from kinematics
   void setBase2PointsTransform(tf::StampedTransform& b2p);
   ///Transform, e.g., from Joint/Wheel odometry
-  tf::StampedTransform getOdomTransform();
+  tf::StampedTransform getOdomTransform() const;
   ///Transform, e.g., from MoCap
-  tf::StampedTransform getGroundTruthTransform();
+  tf::StampedTransform getGroundTruthTransform() const;
   ///Transform, e.g., from kinematics
-  tf::StampedTransform getBase2PointsTransform();
+  tf::StampedTransform getBase2PointsTransform() const;
 
 	///Compute the relative transformation between the nodes
 	bool getRelativeTransformationTo(const Node* target_node, 

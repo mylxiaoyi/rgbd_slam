@@ -276,13 +276,13 @@ void Node::setGroundTruthTransform(tf::StampedTransform gt){
 void Node::setBase2PointsTransform(tf::StampedTransform& b2p){
     base2points_ = b2p;
 }
-tf::StampedTransform Node::getOdomTransform(){
+tf::StampedTransform Node::getOdomTransform() const {
     return odom_transform_;
 }
-tf::StampedTransform Node::getGroundTruthTransform(){
+tf::StampedTransform Node::getGroundTruthTransform() const {
     return ground_truth_transform_;
 }
-tf::StampedTransform Node::getBase2PointsTransform(){
+tf::StampedTransform Node::getBase2PointsTransform() const {
     return base2points_;
 }
 
