@@ -30,7 +30,6 @@
   <rosdep name="eigen"/>
   <rosdep name="libg2o"/>
   <rosdep name="octomap"/>
-  <rosdep name="octomap-mapping"/>
   <export>
     <rosdoc config="rosdoc.yaml" />
     <nodelet plugin="${prefix}/nodelet_plugins.xml" />
