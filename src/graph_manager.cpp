@@ -87,8 +87,13 @@ GraphManager::GraphManager() :
                                                          ps->get<int>("publisher_queue_size"));
   computed_motion_ = tf::Transform::getIdentity();
   init_base_pose_  = tf::Transform::getIdentity();
-  base2points_     = tf::Transform::getIdentity();
-  //timer_ = nh.createTimer(ros::Duration(0.1), &GraphManager::broadcastTransform, this);
+
+
+  std::string fixed_frame = ParameterServer::instance()->get<std::string>("fixed_frame_name");
+  std::string base_frame  = ParameterServer::instance()->get<std::string>("base_frame_name");
+    
+  latest_transform_cache_ = tf::StampedTransform(tf::Transform::getIdentity(), ros::Time::now(), base_frame, fixed_frame);
+  timer_ = nh.createTimer(ros::Duration(0.1), &GraphManager::broadcastLatestTransform, this);
 }
 
 
@@ -416,7 +421,9 @@ bool GraphManager::addNode(Node* new_node)
             g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(graph_[prev_frame->id_]->vertex_id_));
             tf::Transform previous = g2o2TF(v->estimateAsSE3Quat());
             tf::Transform combined = previous*incremental;
-            broadcastTransform(new_node, combined);
+            latest_transform_cache_ = stampedTransformInWorldFrame(new_node, combined);
+            printTransform("Computed new transform", latest_transform_cache_);
+            broadcastTransform(latest_transform_cache_);
             process_node_runs_ = false;
             curr_best_result_ = mr;
             return false;
@@ -652,7 +659,6 @@ bool GraphManager::addNode(Node* new_node)
      //make the transform of the last node known
      //computed_motion_ is set by optimizeGraph() 
      //FIXME: it probably hasn't finished yet when concurrent, e.g. initialize with motion_estimate before
-     broadcastTransform(new_node, computed_motion_);
 
      visualizeGraphEdges();
      visualizeGraphNodes();
@@ -870,9 +876,16 @@ double GraphManager::optimizeGraphImpl(double break_criterion)
   else {
     optimizer_->setFixed(camera_vertices, false);
   }
-  g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(last_added_cam_vertex_id()));
 
+  g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(last_added_cam_vertex_id()));
+  //ROS_INFO("Sending Transform for Vertex ID: %d", new_node
   computed_motion_ =  g2o2TF(v->estimateAsSE3Quat());
+  Node* newest_node = graph_[graph_.size()-1];
+  latest_transform_cache_ = stampedTransformInWorldFrame(newest_node, computed_motion_);
+  //printTransform("Computed final transform", latest_transform_cache_);
+  broadcastTransform(latest_transform_cache_);
+
+
   ROS_WARN("GM: 1198: no graph edges in visualzation"  );
   Q_EMIT setGraphEdges(getGraphEdges());
   Q_EMIT updateTransforms(getAllPosesAsMatrixList());

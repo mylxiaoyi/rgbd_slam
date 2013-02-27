@@ -222,9 +222,16 @@ protected:
     //Delete a camera frame. Be careful, this might split the graph!
     void deleteCameraFrame(int id);
 
-    ///Send the transform between openni_camera (the initial position of the cam)
-    ///and the cumulative motion. 
-    void broadcastTransform(Node* node, tf::Transform& computed_motion);
+    ///Broadcast given transform
+    void broadcastTransform(const tf::StampedTransform& computed_motion) const;
+
+    ///Broadcast cached transform
+    void broadcastLatestTransform(const ros::TimerEvent& event) const;
+
+    ///Compute the transform between the fixed frame (usually the initial position of the cam) 
+    /// and the node from the motion (given in sensor frame)
+    tf::StampedTransform stampedTransformInWorldFrame(const Node* node, 
+                                                      const tf::Transform& computed_motion) const;
 
     int last_added_cam_vertex_id(){
       return graph_[graph_.size()-1]->vertex_id_;
@@ -257,10 +264,10 @@ protected:
     //!Used to start the broadcasting of the pose estimate regularly
     ros::Timer timer_;
     //!Used to broadcast the pose estimate
-    tf::TransformBroadcaster br_;
+    mutable tf::TransformBroadcaster br_;
     tf::Transform computed_motion_; ///<transformation of the last frame to the first frame (assuming the first one is fixed)
-    tf::Transform  init_base_pose_;
-    tf::Transform base2points_;//base_frame -> optical_frame 
+    tf::Transform init_base_pose_;
+    tf::StampedTransform latest_transform_cache_;//base_frame -> optical_frame 
 
     //!Map from node id to node. Assumption is, that ids start at 0 and are consecutive
     typedef std::pair<int, Node*> GraphNodeType;

@@ -790,6 +790,38 @@ void GraphManager::saveG2OGraph(QString filename)
   optimizer_->save(qPrintable(filename));
 }
 
+
+tf::StampedTransform GraphManager::stampedTransformInWorldFrame(const Node* node, const tf::Transform& computed_motion) const 
+{
+    std::string fixed_frame = ParameterServer::instance()->get<std::string>("fixed_frame_name");
+    std::string base_frame  = ParameterServer::instance()->get<std::string>("base_frame_name");
+    if(base_frame.empty()){ //if there is no base frame defined, use frame of sensor data
+      base_frame = node->pc_col->header.frame_id;
+    }
+    const tf::StampedTransform& base2points = node->getBase2PointsTransform();//get pose of base w.r.t current pc at capture time
+
+    tf::Transform world2base = init_base_pose_*base2points*computed_motion*base2points.inverse();
+    //printTransform("World->Base", world2base);
+
+    return tf::StampedTransform(world2base.inverse(), base2points.stamp_, base_frame, fixed_frame);
+}
+
+void GraphManager::broadcastLatestTransform(const ros::TimerEvent& event) const
+{
+    //printTransform("Broadcasting cached transform", latest_transform_cache_);
+    tf::StampedTransform tmp(latest_transform_cache_, 
+                             ros::Time::now(),
+                             latest_transform_cache_.frame_id_,
+                             latest_transform_cache_.child_frame_id_);
+    broadcastTransform(tmp);
+}
+
+void GraphManager::broadcastTransform(const tf::StampedTransform& stamped_transform) const 
+{
+    br_.sendTransform(stamped_transform);
+}
+
+/*
 void GraphManager::broadcastTransform(Node* node, tf::Transform& computed_motion){
     std::string fixed_frame = ParameterServer::instance()->get<std::string>("fixed_frame_name");
     std::string base_frame  = ParameterServer::instance()->get<std::string>("base_frame_name");
@@ -803,7 +835,7 @@ void GraphManager::broadcastTransform(Node* node, tf::Transform& computed_motion
       br_.sendTransform(tf::StampedTransform(tf::Transform::getIdentity(), ros::Time::now(), fixed_frame, base_frame));
       return;
     }
-    */
+    * /
     const tf::StampedTransform& base2points = node->getBase2PointsTransform();//get pose of base w.r.t current pc at capture time
 
     //Assumption: computed_motion_ contains last pose
@@ -814,6 +846,7 @@ void GraphManager::broadcastTransform(Node* node, tf::Transform& computed_motion
     
     br_.sendTransform(tf::StampedTransform(world2base.inverse(), base2points.stamp_, base_frame, fixed_frame));
 }
+*/
 
 ///Send node's pointcloud with given publisher and timestamp
 void publishCloud(Node* node, ros::Time timestamp, ros::Publisher pub){
