@@ -837,7 +837,8 @@ void Node::computeInliersAndError(const std::vector<cv::DMatch> & all_matches,
   {
     const Eigen::Vector4f& origin = origins[m.queryIdx];
     const Eigen::Vector4f& target = earlier[m.trainIdx];
-    if(origin(2) == 0.0 || target(2) == 0.0){ //does NOT trigger on NaN
+    if(origin(2) == 0.0 || target(2) == 0.0 || //does NOT trigger on NaN
+        isnan(origin(2)) || isnan(target(2))){ 
        continue;
     }
     double mahal_dist = errorFunction2(origin, target, transformation);
@@ -1016,6 +1017,28 @@ bool Node::getRelativeTransformationTo(const Node* earlier_node,
   }
   std::sort(matches_with_depth.begin(), matches_with_depth.end()); //sort by distance, which is the nn_ratio
 
+  { //IDENTITYTEST
+    ROS_INFO("Initial Test: Trying identity as hypothesis");
+    //1 ransac iteration with identity
+    Eigen::Matrix4f transformation = Eigen::Matrix4f::Identity();//hypothesis
+    std::vector<cv::DMatch> inlier; //result
+    //test which samples are inliers 
+    computeInliersAndError(*initial_matches, transformation, 
+                           this->feature_locations_3d_, //this->feature_depth_stats_, 
+                           earlier_node->feature_locations_3d_, //earlier_node->feature_depth_stats_, 
+                           inlier, inlier_error, max_dist_m*max_dist_m); 
+    
+    //superior to before?
+    if (inlier.size() > min_inlier_threshold && inlier_error < max_dist_m) {
+      assert(inlier_error>=0);
+      resulting_transformation = transformation;
+      matches.assign(inlier.begin(), inlier.end());
+      rmse = inlier_error;
+      valid_iterations++;
+      ROS_INFO("No-Motion guess for %i<->%i: inliers: %i (min %i), inlier_error: %.2f (max %.2f)", this->id_, earlier_node->id_, (int)matches.size(), (int) min_inlier_threshold,  rmse, max_dist_m);
+    }
+  } //END IDENTITY AS GUESS
+
   int real_iterations = 0;
   for(int n = 0; (n < ransac_iterations && matches_with_depth.size() >= sample_size); n++) //Without the minimum number of matches, the transformation can not be computed as usual TODO: implement monocular motion est
   {
@@ -1074,29 +1097,6 @@ bool Node::getRelativeTransformationTo(const Node* earlier_node,
         }
     }
   } //iterations
-  if(valid_iterations == 0) // maybe no depth. Try identity?
-  { 
-    //IDENTITYTEST
-    ROS_INFO("Last Resort: Trying identity as hypothesis");
-    //1 ransac iteration with identity
-    Eigen::Matrix4f transformation = Eigen::Matrix4f::Identity();//hypothesis
-    std::vector<cv::DMatch> inlier; //result
-    //test which samples are inliers 
-    computeInliersAndError(*initial_matches, transformation, 
-                           this->feature_locations_3d_, //this->feature_depth_stats_, 
-                           earlier_node->feature_locations_3d_, //earlier_node->feature_depth_stats_, 
-                           inlier, inlier_error, max_dist_m*max_dist_m); 
-    
-    //superior to before?
-    if (inlier.size() > min_inlier_threshold && inlier_error < max_dist_m) {
-      assert(inlier_error>=0);
-      resulting_transformation = transformation;
-      matches.assign(inlier.begin(), inlier.end());
-      rmse = inlier_error;
-      valid_iterations++;
-      ROS_INFO("No-Motion guess for %i<->%i: inliers: %i (min %i), inlier_error: %.2f (max %.2f)", this->id_, earlier_node->id_, (int)matches.size(), (int) min_inlier_threshold,  rmse, max_dist_m);
-    }
-  } //END IDENTITY AS GUESS
   ROS_INFO("%i good iterations (from %i), inlier pct %i, inlier cnt: %i, error (MHD): %.2f",valid_iterations, ransac_iterations, (int) (matches.size()*1.0/initial_matches->size()*100),(int) matches.size(),rmse);
   
   //ROS_INFO_STREAM("Transformation estimated:\n" << resulting_transformation);
