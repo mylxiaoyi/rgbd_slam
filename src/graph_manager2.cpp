@@ -42,13 +42,16 @@ void GraphManager::clearPointClouds() {
 }
 
 void GraphManager::clearPointCloud(pointcloud_type const * pc) {
+  ROS_DEBUG("Should clear cloud at %p", pc);
   BOOST_REVERSE_FOREACH(GraphNodeType entry, graph_){
     if(entry.second->pc_col.get() == pc){
       entry.second->clearPointCloud();
-      ROS_WARN("Cleared PointCloud after rendering to openGL list. It will not be available for save/send.");
+      ROS_INFO("Cleared PointCloud after rendering to openGL list. It will not be available for save/send.");
       return;
     }
+    ROS_DEBUG("Compared to node %d (cloud at %p has size %u)", entry.first, entry.second->pc_col.get(), entry.second->pc_col->points.size());
   }
+  ROS_WARN("Should Clear cloud at %p, but didn't find it in any node.", pc);
 }
 
 void GraphManager::deleteLastFrame(){

@@ -620,15 +620,15 @@ bool GraphManager::addNode(Node* new_node)
 
  if (cam_cam_edges.size() > num_edges_before) 
  { //Success
-   //First render the cloud with the best frame-to-frame estimate
-   //The transform will get updated when optimizeGraph finishes
-   pointcloud_type* cloud_to_visualize = new_node->pc_col.get();
-   if(!found_trafo) cloud_to_visualize = new pointcloud_type();
-   Q_EMIT setPointCloud(cloud_to_visualize, curr_motion_estimate);
-   Q_EMIT setFeatures(&(new_node->feature_locations_3d_));
-
    if(localization_only_)
    {
+     //First render the cloud with the best frame-to-frame estimate
+     //The transform will get updated when optimizeGraph finishes
+     pointcloud_type* cloud_to_visualize = new_node->pc_col.get();
+     if(!found_trafo) cloud_to_visualize = new pointcloud_type();
+     Q_EMIT setPointCloud(cloud_to_visualize, curr_motion_estimate);
+     Q_EMIT setFeatures(&(new_node->feature_locations_3d_));
+
      optimizeGraph();
      g2o::VertexSE3* new_v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(graph_[new_node->id_]->vertex_id_));
      QMutexLocker locker(&optimizer_mutex);
@@ -637,7 +637,16 @@ bool GraphManager::addNode(Node* new_node)
    }
    else //localization_only_ == false
    {
+     //This needs to be done before rendering, so deleting the cloud always works
      graph_[new_node->id_] = new_node; //Node->id_ == Graph_ Index
+
+     //First render the cloud with the best frame-to-frame estimate
+     //The transform will get updated when optimizeGraph finishes
+     pointcloud_type* cloud_to_visualize = new_node->pc_col.get();
+     if(!found_trafo) cloud_to_visualize = new pointcloud_type();
+     Q_EMIT setPointCloud(cloud_to_visualize, curr_motion_estimate);
+     Q_EMIT setFeatures(&(new_node->feature_locations_3d_));
+
      ROS_INFO("Adding node with id %i and seq id %i to the graph", new_node->id_, new_node->seq_id_);
      if(!edge_to_keyframe) {
        std::stringstream ss;
