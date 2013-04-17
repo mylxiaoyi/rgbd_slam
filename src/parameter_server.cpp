@@ -87,14 +87,16 @@ void ParameterServer::defaultConfig() {
   addOption("min_translation_meter",         static_cast<double> (0.05),                "Frames with motion less than this, will be omitted ");
   addOption("min_rotation_degree",           static_cast<double> (2.5),                 "Frames with motion less than this, will be omitted ");
   addOption("max_dist_for_inliers",          static_cast<double> (3),                   "Mahalanobis distance for matches to be considered inliers by ransac");
-  addOption("ransac_iterations",             static_cast<int> (100),                   "These are fast, so high values are ok ");
-  addOption("g2o_transformation_refinement", static_cast<int> (0),                     "Use g2o to refine the ransac result for that many iterations, i.e. optimize the Mahalanobis distance in a final step. Use zero to disable.");
+  addOption("ransac_iterations",             static_cast<int> (100),                    "These are fast, so high values are ok ");
+  addOption("ransac_termination_inlier_pct", static_cast<double> (60.0),                "Percentage of matches that need to be inliers to succesfully terminate ransac before the 'ransac_iterations' have been reached");
+  addOption("g2o_transformation_refinement", static_cast<int> (0),                      "Use g2o to refine the ransac result for that many iterations, i.e. optimize the Mahalanobis distance in a final step. Use zero to disable.");
   addOption("max_connections",               static_cast<int> (-1),                     "Stop frame comparisons after this many succesfully found spation relations. Negative value: No limit.");
   addOption("geodesic_depth",                static_cast<int> (3),                      "For comparisons with neighbors, consider those with a graph distance (hop count) equal or below this value as neighbors of the direct predecessor");
   addOption("predecessor_candidates",        static_cast<int> (2),                      "Compare Features to this many direct sequential predecessors");
   addOption("neighbor_candidates",           static_cast<int> (2),                      "Compare Features to this many graph neighbours. Sample from the candidates");
   addOption("min_sampled_candidates",        static_cast<int> (2),                      "Compare Features to this many uniformly sampled nodes for corrspondences ");
-  addOption("use_icp",                       static_cast<bool> (false),                 "Activate GICP Fallback. Ignored if GICP is not compiled in (see top of CMakeLists.txt) ");
+  addOption("use_icp",                       static_cast<bool> (false),                 "Activate ICP Fallback. Ignored if ICP is not compiled in (see top of CMakeLists.txt) ");
+  addOption("icp_method",                    std::string("icp"),                        "gicp, icp or icp_nl");
   addOption("gicp_max_cloud_size",           static_cast<int> (10000),                  "Subsample for increased speed");
   addOption("emm__skip_step",                static_cast<int> (5),                      "When evaluating the transformation, subsample rows and cols with this stepping");
   addOption("emm__mark_outliers",            static_cast<bool> (false),                 "Mark outliers in the observation likelihood evaluation with colors. Red: point would have blocked the view of an earlier observation. Cyan: An earlier observation should have blocked the view to this point");
@@ -114,6 +116,7 @@ void ParameterServer::defaultConfig() {
   addOption("glwidget_without_clouds",       static_cast<bool> (false),                 "3D view should only display the graph");
   addOption("visualize_mono_depth_overlay",  static_cast<bool> (false),                 "Show Depth and Monochrome image as overlay in featureflow");
   addOption("visualization_skip_step",       static_cast<int> (1),                      "Draw only every nth pointcloud row and line, high values require higher squared_meshing_threshold ");
+  addOption("fast_rendering_step",           static_cast<int> (1),                      "Draw only every nth pointcloud during user interaction");
   addOption("gl_point_size",                 static_cast<double> (1.0),                 "Point size, when not triangulating. See documentation of GL_POINT_SIZE.");
   addOption("gl_grid_size_xy",               static_cast<int> (0),                      "Grid size in the xy plane (sidelength in number of cell). Zero disables. Note that this is in the coordinate system of the point cloud");
   addOption("gl_grid_size_xz",               static_cast<int> (20),                     "Grid size in the xz plane (sidelength in number of cell). Zero disables. Note that this is in the coordinate system of the point cloud");

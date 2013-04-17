@@ -15,7 +15,7 @@
  */
 
 /** This file contains the methods of GraphManager concerned with transfering 
- * data via ROS or to disk. They are declared in graph_manager.h */
+ * data via ROS, to the screen (visualization) or to disk. They are declared in graph_manager.h */
 
 #include <sys/time.h>
 #include "scoped_timer.h"
@@ -100,8 +100,8 @@ void GraphManager::sendAllCloudsImpl()
 
     ROS_DEBUG("Sending out transform %i", it->first);
     printTransform("World->Base", world2base);
-    br_.sendTransform(tf::StampedTransform(world2base, now, fixed_frame, base_frame));
-    br_.sendTransform(tf::StampedTransform(err, now, fixed_frame, "/where_mocap_should_be"));
+    br_.sendTransform(tf::StampedTransform(world2base, now, base_frame, fixed_frame));
+    //br_.sendTransform(tf::StampedTransform(err, now, fixed_frame, "/where_mocap_should_be"));
     ROS_DEBUG("Sending out cloud %i", it->first);
     //graph_[i]->publish("/batch_transform", now, batch_cloud_pub_);
     publishCloud(node, now, batch_cloud_pub_);
@@ -159,7 +159,7 @@ void GraphManager::saveOctomapImpl(QString filename)
   std::list<Node*> nodes_for_octomapping;
   unsigned int points_to_render = 0;
   { //Get the transformations from the optimizer and store them in the node's point cloud header
-    QMutexLocker locker(&optimizer_mutex);
+    QMutexLocker locker(&optimizer_mutex_);
     for (graph_it it = graph_.begin(); it != graph_.end(); ++it){
       Node* node = it->second;
       if(!node->valid_tf_estimate_) {
@@ -475,7 +475,7 @@ void GraphManager::saveTrajectory(QString filebasename, bool with_ground_truth)
       return;
     }
     ROS_INFO("Logging Trajectory");
-    QMutexLocker locker(&optimizer_mutex);
+    QMutexLocker locker(&optimizer_mutex_);
 
     //FIXME: DO this block only if with_ground_truth is true and !gt.empty()
     std::string gt = ParameterServer::instance()->get<std::string>("ground_truth_frame_name");
@@ -889,12 +889,6 @@ void GraphManager::drawFeatureFlow(cv::Mat& canvas, cv::Scalar line_color,
       return;
     }
 
-    //encircle all keypoints in this image
-    //for(unsigned int feat = 0; feat < newernode->feature_locations_2d_.size(); feat++) {
-    //    cv::Point2f p; 
-    //    p = newernode->feature_locations_2d_[feat].pt;
-    //    cv::circle(canvas, p, circle_radius, circle_color, line_thickness, 8);
-    //}
     cv::Mat tmpimage = cv::Mat::zeros(canvas.rows, canvas.cols, canvas.type());
     if(canvas.type() == CV_8UC1) circle_color = cv::Scalar(255);
 
@@ -908,7 +902,9 @@ void GraphManager::drawFeatureFlow(cv::Mat& canvas, cv::Scalar line_color,
       }
     }
 
+    //Draw normal keypoints in given color 
     cv::drawKeypoints(canvas, with_depth, tmpimage, circle_color, 5);
+    //Draw depthless keypoints in orange 
     cv::drawKeypoints(canvas, without_depth, tmpimage, cv::Scalar(0,128,255,0), 5);
 
 
@@ -922,9 +918,12 @@ void GraphManager::drawFeatureFlow(cv::Mat& canvas, cv::Scalar line_color,
 
         double angle;    angle = atan2( (double) p.y - q.y, (double) p.x - q.x );
         double hypotenuse = cv::norm(p-q);
-            cv::line(canvas, p, q, line_color, line_thickness, cv_aa);
-        if(hypotenuse > 1.5){  //only larger motions larger than one pix get an arrow tip
+        if(hypotenuse > 0.1){  //only larger motions larger than one pix get an arrow line
             cv::line( canvas, p, q, line_color, line_thickness, cv_aa );
+        } else { //draw a smaller circle into the bigger one 
+            cv::circle(canvas, p, 1, line_color, line_thickness, cv_aa);
+        }
+        if(hypotenuse > 3.0){  //only larger motions larger than this get an arrow tip
             /* Now draw the tips of the arrow.  */
             p.x =  (q.x + 4 * cos(angle + pi_fourth));
             p.y =  (q.y + 4 * sin(angle + pi_fourth));
@@ -932,9 +931,7 @@ void GraphManager::drawFeatureFlow(cv::Mat& canvas, cv::Scalar line_color,
             p.x =  (q.x + 4 * cos(angle - pi_fourth));
             p.y =  (q.y + 4 * sin(angle - pi_fourth));
             cv::line( canvas, p, q, line_color, line_thickness, cv_aa );
-        } else { //draw a smaller circle into the bigger one 
-            cv::circle(canvas, p, circle_radius-2, circle_color, line_thickness, cv_aa);
-        }
+        } 
     }
     clock_gettime(CLOCK_MONOTONIC, &finish); elapsed = (finish.tv_sec - starttime.tv_sec); elapsed += (finish.tv_nsec - starttime.tv_nsec) / 1000000000.0; ROS_INFO_STREAM_COND_NAMED(elapsed > ParameterServer::instance()->get<double>("min_time_reported"), "timings", __FUNCTION__ << " runtime: "<< elapsed <<" s");
 }
