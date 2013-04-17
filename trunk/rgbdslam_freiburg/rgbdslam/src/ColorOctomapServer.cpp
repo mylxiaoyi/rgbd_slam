@@ -36,6 +36,11 @@ bool ColorOctomapServer::save(const char* filename)
   std::ofstream outfile(filename, std::ios_base::out | std::ios_base::binary);
   if (outfile.is_open()){
     //m_octoMap.octree.writeConst(outfile); 
+    if (ParameterServer::instance()->get<bool>("concurrent_io")) {
+      ROS_INFO("Waiting for rendering thread to finish");
+      rendering.waitForFinished();
+    }
+    ROS_INFO("Writing octomap to %s", filename);
     m_octoMap.octree.write(outfile); 
     outfile.close();
     ROS_INFO("color tree written %s", filename);
@@ -60,7 +65,7 @@ void ColorOctomapServer::insertCloudCallback(const pointcloud_type::ConstPtr clo
   pointcloud_type::Ptr pcl_cloud(new pointcloud_type);
   pcl_ros::transformPointCloud(*cloud, *pcl_cloud, trans);
 
-  if (ParameterServer::instance()->get<bool>("concurrent_edge_construction")) {//FIXME extra variable for this?
+  if (ParameterServer::instance()->get<bool>("concurrent_io")) {
     rendering.waitForFinished();
     rendering = QtConcurrent::run(this, &ColorOctomapServer::insertCloudCallbackCommon, pcl_cloud, trans, max_range);
   }

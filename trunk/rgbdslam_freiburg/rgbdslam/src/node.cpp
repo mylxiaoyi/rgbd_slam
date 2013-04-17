@@ -1430,6 +1430,7 @@ void pairwiseObservationLikelihood(const Node* newer_node, const Node* older_nod
       mr.all_points = all_points;
 }
 
+///Compute the RootSIFT from SIFT according to Arandjelovic and Zisserman
 void squareroot_descriptor_space(cv::Mat& descriptors)
 {
   // Compute sums for L1 Norm

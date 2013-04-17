@@ -240,5 +240,6 @@ public:
 };
 
 void pairwiseObservationLikelihood(const Node* newer_node, const Node* older_node, MatchingResult& mr);
+///Compute the RootSIFT from SIFT according to Arandjelovic and Zisserman
 void squareroot_descriptor_space(cv::Mat& feature_descriptors);
 #endif
