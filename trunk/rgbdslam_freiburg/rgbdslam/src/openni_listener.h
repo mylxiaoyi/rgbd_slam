@@ -62,7 +62,7 @@ class BagSubscriber : public message_filters::SimpleFilter<M>
 {
 public:
   void newMessage(const boost::shared_ptr<M const> &msg) { 
-    signalMessage(msg); 
+    this->signalMessage(msg); //"this->" is required as of ros groovy
   }
 };
 

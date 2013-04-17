@@ -41,6 +41,9 @@
 #include "misc.h"
 #include <pcl/filters/voxel_grid.h>
 #include <opencv/highgui.h>
+#ifdef USE_PCL_ICP
+#include "icp.h"
+#endif
 
 QMutex Node::gicp_mutex;
 QMutex Node::siftgpu_mutex;
@@ -56,6 +59,9 @@ Node::Node(const cv::Mat& visual,
            cv::Ptr<cv::DescriptorExtractor> extractor) :
   id_(-1), seq_id_(-1), vertex_id_(-1), valid_tf_estimate_(true),
   pc_col(new pointcloud_type()),
+#ifdef USE_PCL_ICP
+  filtered_pc_col(new pointcloud_type()),
+#endif
   flannIndex(NULL),
   base2points_(tf::Transform::getIdentity(), depth_header.stamp, ParameterServer::instance()->get<std::string>("base_frame_name"), depth_header.frame_id),
   ground_truth_transform_(tf::Transform::getIdentity(), depth_header.stamp, ParameterServer::instance()->get<std::string>("ground_truth_frame_name"), ParameterServer::instance()->get<std::string>("base_frame_name")),
@@ -78,6 +84,12 @@ Node::Node(const cv::Mat& visual,
     pc_col = pointcloud_type::Ptr(new pointcloud_type());
   }
   pc_col->header = depth_header;
+
+#ifdef USE_PCL_ICP
+  if(ps->get<bool>("use_icp")){
+    filterCloud(*pc_col, *filtered_pc_col, ps->get<int>("gicp_max_cloud_size")); 
+  }
+#endif
 
   cv::Mat gray_img; 
   if(visual.type() == CV_8UC3){
@@ -156,6 +168,9 @@ Node::Node(const cv::Mat visual,
            const cv::Mat detection_mask) : 
   id_(-1), seq_id_(-1), vertex_id_(-1), valid_tf_estimate_(true),
   pc_col(point_cloud),
+#ifdef USE_PCL_ICP
+  filtered_pc_col(new pointcloud_type()),
+#endif
   flannIndex(NULL),
   base2points_(tf::Transform::getIdentity(), point_cloud->header.stamp,ParameterServer::instance()->get<std::string>("base_frame_name"), point_cloud->header.frame_id),
   ground_truth_transform_(tf::Transform::getIdentity(), point_cloud->header.stamp, ParameterServer::instance()->get<std::string>("ground_truth_frame_name"), ParameterServer::instance()->get<std::string>("base_frame_name")),
@@ -233,6 +248,11 @@ Node::Node(const cv::Mat visual,
     gicp_mutex.lock();
     gicp_point_set_ = this->getGICPStructure();
     gicp_mutex.unlock();
+  }
+#endif
+#ifdef USE_PCL_ICP
+  if(ps->get<bool>("use_icp")){
+    filterCloud(*pc_col, *filtered_pc_col, ps->get<int>("gicp_max_cloud_size")); 
   }
 #endif
 
@@ -1039,6 +1059,8 @@ bool Node::getRelativeTransformationTo(const Node* earlier_node,
     }
   } //END IDENTITY AS GUESS
 
+
+  //RANSAC
   int real_iterations = 0;
   for(int n = 0; (n < ransac_iterations && matches_with_depth.size() >= sample_size); n++) //Without the minimum number of matches, the transformation can not be computed as usual TODO: implement monocular motion est
   {
@@ -1092,8 +1114,8 @@ bool Node::getRelativeTransformationTo(const Node* earlier_node,
           resulting_transformation = refined_transformation;
           matches.assign(refined_matches.begin(), refined_matches.end());
           //Performance hacks:
-          if (refined_matches.size() > initial_matches->size()*0.5) n+=10;///Iterations with more than half of the initial_matches inlying, count twice
-          if (refined_matches.size() > initial_matches->size()*0.8) break; ///Can this get better anyhow?
+          double percentage_of_inliers = refined_matches.size()/static_cast<double>(initial_matches->size()) * 100.0;
+          if (percentage_of_inliers > ParameterServer::instance()->get<double>("ransac_termination_inlier_pct")) break; ///Can this get better anyhow?
         }
     }
   } //iterations
@@ -1231,20 +1253,60 @@ MatchingResult Node::matchNodePair(const Node* older_node)
           ROS_INFO("RANSAC found no valid trafo, but had initially %d feature matches with average ratio %f",(int) mr.all_matches.size(), nn_ratio);
         }
     } 
-    
-#ifdef USE_ICP_CODE
+    std::string icp_method = ParameterServer::instance()->get<std::string>("icp_method") ;
+#ifdef USE_PCL_ICP
     unsigned int ransac_inlier_points = 0, ransac_outlier_points = 0;
-    if(ParameterServer::instance()->get<bool>("use_icp")){
+    if(ParameterServer::instance()->get<bool>("use_icp") && (icp_method == "icp"||icp_method == "icp_nl"))
+    {
         if((!found_transformation && (((int)this->id_ - (int)older_node->id_) <= 1)) //Apply icp only for adjacent frames, as the initial guess needs to be in the global minimum
             || found_transformation) //Apply icp only for adjacent frames, as the initial guess needs to be in the global minimum
            //|| (!found_transformation && initial_node_matches_ == 0)) //no matches were found, and frames are not too far apart => identity is a good initial guess.
         {
             ROS_INFO("Applying GICP for Transformation between Nodes %d and %d",this->id_ , older_node->id_);
             MatchingResult mr_icp;
+            mr_icp.final_trafo = icpAlignment(older_node->filtered_pc_col, this->filtered_pc_col, mr.final_trafo);   
+            ROS_INFO_STREAM("RANSAC Transformation:\n" << mr.final_trafo);
+            ROS_INFO_STREAM("ICP Transformation:\n" << mr_icp.final_trafo);
+
+            //if(getRelativeTransformationTo_ICP_code(older_node,mr_icp.icp_trafo, mr.ransac_trafo) && //converged
+            if(!((mr_icp.final_trafo.array() != mr_icp.final_trafo.array()).any())) //No NaNs
+            {
+                ROS_INFO("GICP for Nodes %u and %u Successful", this->id_, older_node->id_);
+                double icp_quality;
+                pairwiseObservationLikelihood(this, older_node, mr_icp);
+                if(observation_criterion_met(mr_icp.inlier_points, mr_icp.outlier_points, mr_icp.occluded_points + mr_icp.inlier_points + mr_icp.outlier_points, icp_quality)
+                   && icp_quality > ransac_quality)
+                {
+                    //This signals a valid result:
+                    found_transformation = true;
+                    mr.edge.id1 = older_node->id_;//and we have a valid transformation
+                    mr.edge.id2 = this->id_; //since there are enough matching features,
+                    mr.final_trafo = mr_icp.final_trafo;    
+                    mr.edge.informationMatrix = Eigen::Matrix<double,6,6>::Identity()*(1e-2); //TODO: What do we do about the information matrix? 
+                    mr.edge.mean = eigen2G2O(mr.final_trafo.cast<double>());//we insert an edge between the frames
+                }
+            }
+        }
+    }
+#endif  
+
+#ifdef USE_ICP_CODE
+    unsigned int ransac_inlier_points = 0, ransac_outlier_points = 0;
+    if(ParameterServer::instance()->get<bool>("use_icp") && icp_method == "gicp")
+    {
+        if((!found_transformation && (((int)this->id_ - (int)older_node->id_) <= 1)) //Apply icp only for adjacent frames, as the initial guess needs to be in the global minimum
+            || found_transformation) //Apply icp only for adjacent frames, as the initial guess needs to be in the global minimum
+           //|| (!found_transformation && initial_node_matches_ == 0)) //no matches were found, and frames are not too far apart => identity is a good initial guess.
+        {
+            ROS_INFO("Applying GICP for Transformation between Nodes %d and %d",this->id_ , older_node->id_);
+            MatchingResult mr_icp;
+
             if(getRelativeTransformationTo_ICP_code(older_node,mr_icp.icp_trafo, mr.ransac_trafo) && //converged
                !((mr_icp.icp_trafo.array() != mr_icp.icp_trafo.array()).any())) //No NaNs
             {
                 ROS_INFO("GICP for Nodes %u and %u Successful", this->id_, older_node->id_);
+                ROS_INFO_STREAM("RANSAC Transformation:\n" << mr.final_trafo);
+                ROS_INFO_STREAM("ICP Transformation:\n" << mr_icp.final_trafo);
                 double icp_quality;
                 pairwiseObservationLikelihood(this, older_node, mr_icp);
                 if(observation_criterion_met(mr_icp.inlier_points, mr_icp.outlier_points, mr_icp.occluded_points + mr_icp.inlier_points + mr_icp.outlier_points, icp_quality)
@@ -1373,7 +1435,7 @@ void squareroot_descriptor_space(cv::Mat& descriptors)
   // Compute sums for L1 Norm
   cv::Mat sums_vec;
   descriptors = cv::abs(descriptors); //otherwise we draw sqrt of negative vals
-  cv::reduce(descriptors, sums_vec, 1 /*sum over columns*/, CV_REDUCE_SUM);
+  cv::reduce(descriptors, sums_vec, 1 /*sum over columns*/, CV_REDUCE_SUM, CV_32FC1);
   for(unsigned int row = 0; row < descriptors.rows; row++){
     int offset = row*descriptors.cols;
     for(unsigned int col = 0; col < descriptors.cols; col++){

@@ -144,6 +144,15 @@ class GraphManager : public QObject {
     /// \callergraph
     bool addNode(Node* newNode); 
 
+    //! Try to compute transformations to previous nodes
+    /// getPotentialEdgeTargetsWithDijkstra is used to select
+    /// previous nodes to match against, then the comparison
+    /// of nodes is called, possibly in parallel.
+    /// \callergraph
+    bool nodeComparisons(Node* newNode, 
+                         QMatrix4x4& curr_motion_estimate,
+                         bool& edge_to_keyframe);///Output:contains the best-yet of the pairwise motion estimates for the current node
+
     /// Adds the first node
     void firstNode(Node* new_node);
 
@@ -279,9 +288,9 @@ protected:
     bool process_node_runs_;
     bool localization_only_;
     //!This mutex restricts access to the optimizer's data structures
-    QMutex optimizer_mutex;
+    QMutex optimizer_mutex_;
     //!This mutex restricts the optimization computation itself
-    QMutex optimization_mutex;
+    QMutex optimization_mutex_;
     //cv::FlannBasedMatcher global_flann_matcher;
     QList<int> keyframe_ids_;//Keyframes are added, if no previous keyframe was matched
     //NEW std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> > feature_coords_;  

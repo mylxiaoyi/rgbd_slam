@@ -22,7 +22,6 @@
 #include "graph_manager.h"
 #include "misc.h"
 //#include <sensor_msgs/PointCloud2.h>
-#include <opencv2/features2d/features2d.hpp>
 #include <QThread>
 #include <qtconcurrentrun.h>
 #include <QtConcurrentMap> 
@@ -100,8 +99,8 @@ GraphManager::GraphManager() :
 
 void GraphManager::createOptimizer(std::string backend, g2o::SparseOptimizer* optimizer)
 {
-  QMutexLocker locker(&optimizer_mutex);
-  QMutexLocker locker2(&optimization_mutex);
+  QMutexLocker locker(&optimizer_mutex_);
+  QMutexLocker locker2(&optimization_mutex_);
   // allocating the optimizer
   if(optimizer == NULL){
     delete optimizer_; 
@@ -306,16 +305,13 @@ void GraphManager::resetGraph(){
     loop_closures_edges = 0; 
     sequential_edges = 0;
 }
-/*NEW
-void GraphManager::addOutliers(Node* new_node, std::vector<cv::DMatch> inlier_matches){
-    std::vector<bool> outlier_flags(new_node->feature_locations_3d_.size(), true);
-    BOOST_FOREACH(cv::DMatch& m, inlier_matches){ 
-      outlier_flags[m.queryIdx] = false;
 
-}
-*/
 void GraphManager::firstNode(Node* new_node) 
 {
+    //set the node id only if the node is actually added to the graph
+    //needs to be done here as the graph size can change inside this function
+    new_node->id_ = graph_.size();
+    new_node->seq_id_ = next_seq_id++; // allways incremented, even if node is not added
     init_base_pose_ =  new_node->getGroundTruthTransform();//identity if no MoCap available
     printTransform("Ground Truth Transform for First Node", init_base_pose_);
     //new_node->buildFlannIndex(); // create index so that next nodes can use it
@@ -331,9 +327,9 @@ void GraphManager::firstNode(Node* new_node)
     g2o::SE3Quat g2o_ref_se3 = tf2G2O(init_base_pose_);
     reference_pose->setEstimate(g2o_ref_se3);
     reference_pose->setFixed(true);//fix at origin
-    optimizer_mutex.lock();
+    optimizer_mutex_.lock();
     optimizer_->addVertex(reference_pose); 
-    optimizer_mutex.unlock();
+    optimizer_mutex_.unlock();
     QString message;
     Q_EMIT setGUIInfo(message.sprintf("Added first node with %i keypoints to the graph", (int)new_node->feature_locations_2d_.size()));
     //pointcloud_type::Ptr the_pc(new_node->pc_col); //this would delete the cloud after the_pc gets out of scope
@@ -348,14 +344,16 @@ void GraphManager::firstNode(Node* new_node)
     process_node_runs_ = false;
 }
 
-// returns true, iff node could be added to the cloud
-bool GraphManager::addNode(Node* new_node) 
+bool GraphManager::nodeComparisons(Node* new_node, 
+                                   QMatrix4x4& curr_motion_estimate,
+                                   bool& edge_to_keyframe)///Output:contains the best-yet of the pairwise motion estimates for the current node
+    
 {
     /// \callergraph
     ScopedTimer s(__FUNCTION__);
     process_node_runs_ = true;
 
-    QMatrix4x4 curr_motion_estimate;///contains the best-yet of the pairwise motion estimates for the current node
+    
     if(reset_request_) resetGraph(); 
     ParameterServer* ps = ParameterServer::instance();
     if ((int)new_node->feature_locations_2d_.size() < ps->get<int>("min_matches") && 
@@ -371,16 +369,9 @@ bool GraphManager::addNode(Node* new_node)
     new_node->id_ = graph_.size();
     new_node->seq_id_ = next_seq_id++; // allways incremented, even if node is not added
 
-    //First Node, so only build its index, insert into storage and add a
-    //vertex at the origin, of which the position is very certain
-    if (graph_.size()==0){
-        firstNode(new_node);
-        return true;
-    }
-
     earliest_loop_closure_node_ = new_node->id_;
     unsigned int num_edges_before = cam_cam_edges.size();
-    bool edge_to_keyframe = false;
+    edge_to_keyframe = false;
 
     ROS_DEBUG("Graphsize: %d Nodes", (int) graph_.size());
     marker_id_ = 0; //overdraw old markers
@@ -616,87 +607,100 @@ bool GraphManager::addNode(Node* new_node)
       new_node->valid_tf_estimate_ = false; //Don't use for postprocessing, rendering etc
     }
     */
+    return cam_cam_edges.size() > num_edges_before;
+}
 
 
- if (cam_cam_edges.size() > num_edges_before) 
- { //Success
-   if(localization_only_)
-   {
-     //First render the cloud with the best frame-to-frame estimate
-     //The transform will get updated when optimizeGraph finishes
-     pointcloud_type* cloud_to_visualize = new_node->pc_col.get();
-     if(!found_trafo) cloud_to_visualize = new pointcloud_type();
-     Q_EMIT setPointCloud(cloud_to_visualize, curr_motion_estimate);
-     Q_EMIT setFeatures(&(new_node->feature_locations_3d_));
+// returns true, iff node could be added to the cloud
+bool GraphManager::addNode(Node* new_node) 
+{
+  ScopedTimer s(__FUNCTION__);
 
-     optimizeGraph();
-     g2o::VertexSE3* new_v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(graph_[new_node->id_]->vertex_id_));
-     QMutexLocker locker(&optimizer_mutex);
-     QMutexLocker locker2(&optimization_mutex);
-     optimizer_->removeVertex(new_v); //Also removes the edges
-   }
-   else //localization_only_ == false
-   {
-     //This needs to be done before rendering, so deleting the cloud always works
-     graph_[new_node->id_] = new_node; //Node->id_ == Graph_ Index
 
-     //First render the cloud with the best frame-to-frame estimate
-     //The transform will get updated when optimizeGraph finishes
-     pointcloud_type* cloud_to_visualize = new_node->pc_col.get();
-     if(!found_trafo) cloud_to_visualize = new pointcloud_type();
-     Q_EMIT setPointCloud(cloud_to_visualize, curr_motion_estimate);
-     Q_EMIT setFeatures(&(new_node->feature_locations_3d_));
+  //First Node, so only build its index, insert into storage and add a
+  //vertex at the origin, of which the position is very certain
+  if (graph_.size()==0){
+      firstNode(new_node);
+      return true;
+  }
 
-     ROS_INFO("Adding node with id %i and seq id %i to the graph", new_node->id_, new_node->seq_id_);
-     if(!edge_to_keyframe) {
-       std::stringstream ss;
-       ss << "Keyframes: ";
-       BOOST_FOREACH(int id, keyframe_ids_){ ss << id << ", "; }
-       ROS_INFO("%s", ss.str().c_str());
-       keyframe_ids_.push_back(new_node->id_-1); //use the one before, because that one is still localized w.r.t. a keyframe
-     }
-     ROS_INFO("Added Node, new graphsize: %i nodes", (int) graph_.size());
-     if(ps->get<int>("optimizer_skip_step") > 0 && 
-        (camera_vertices.size() % ps->get<int>("optimizer_skip_step")) == 0)
-     { 
-       optimizeGraph();
-     } else {
-       //QList<QPair<int, int> >* edgelist = new QList<QPair<int, int> >(current_edges_);
-       //edgelist->append( qMakePair(curr_best_result_.edge.id2, curr_best_result_.edge.id1));
-       //Q_EMIT setGraphEdges(&current_edges_);
-     }
-     //make the transform of the last node known
-     //computed_motion_ is set by optimizeGraph() 
-     //FIXME: it probably hasn't finished yet when concurrent, e.g. initialize with motion_estimate before
+  //All other nodes are processed in the following
+  QMatrix4x4 motion_estimate;///Output:contains the best-yet of the pairwise motion estimates for the current node
+  bool edge_to_last_keyframe_found = false;
+  bool found_match = nodeComparisons(new_node, motion_estimate, edge_to_last_keyframe_found);
 
-     visualizeGraphEdges();
-     visualizeGraphNodes();
-     visualizeFeatureFlow3D(marker_id_++);
+  if (found_match) 
+  { //Success
+    if(localization_only_)
+    {
+      //First render the cloud with the best frame-to-frame estimate
+      //The transform will get updated when optimizeGraph finishes
+      pointcloud_type* cloud_to_visualize = new_node->pc_col.get();
+      if(!new_node->valid_tf_estimate_) cloud_to_visualize = new pointcloud_type();
+      Q_EMIT setPointCloud(cloud_to_visualize, motion_estimate);
+      Q_EMIT setFeatures(&(new_node->feature_locations_3d_));
 
-   } 
- }
- else //Unsuccesful 
- { 
-   if(graph_.size() == 1){//if there is only one node which has less features, replace it by the new one
-     ROS_WARN("Choosing new initial node, because it has more features");
-     if(new_node->feature_locations_2d_.size() > graph_[0]->feature_locations_2d_.size()){
-       this->resetGraph();
-       process_node_runs_ = false;
-       return this->addNode(new_node);
-     }
-   } else { //delete new_node; //is now  done by auto_ptr
-     ROS_WARN("Did not add as Node");
-   }
- }
+      optimizeGraph();
+      g2o::VertexSE3* new_v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(graph_[new_node->id_]->vertex_id_));
+      QMutexLocker locker(&optimizer_mutex_);
+      QMutexLocker locker2(&optimization_mutex_);
+      optimizer_->removeVertex(new_v); //Also removes the edges
+    }
+    else //localization_only_ == false
+    {
+      //This needs to be done before rendering, so deleting the cloud always works
+      graph_[new_node->id_] = new_node; //Node->id_ == Graph_ Index
+
+      //First render the cloud with the best frame-to-frame estimate
+      //The transform will get updated when optimizeGraph finishes
+      pointcloud_type* cloud_to_visualize = new_node->pc_col.get();
+      if(!new_node->valid_tf_estimate_) cloud_to_visualize = new pointcloud_type();
+      Q_EMIT setPointCloud(cloud_to_visualize, motion_estimate);
+      Q_EMIT setFeatures(&(new_node->feature_locations_3d_));
+
+      ROS_INFO("Adding node with id %i and seq id %i to the graph", new_node->id_, new_node->seq_id_);
+      if(!edge_to_last_keyframe_found) {
+        std::stringstream ss; ss << "Keyframes: ";
+        BOOST_FOREACH(int id, keyframe_ids_){ ss << id << ", "; }
+        ROS_INFO("%s", ss.str().c_str());
+        keyframe_ids_.push_back(new_node->id_-1); //use the one before, because that one is still localized w.r.t. a keyframe
+      }
+      ROS_INFO("Added Node, new graphsize: %i nodes", (int) graph_.size());
+      ParameterServer* ps = ParameterServer::instance();
+      if(ps->get<int>("optimizer_skip_step") > 0 && 
+         (camera_vertices.size() % ps->get<int>("optimizer_skip_step")) == 0)
+      { 
+        optimizeGraph();
+      } 
+
+      visualizeGraphEdges();
+      visualizeGraphNodes();
+      visualizeFeatureFlow3D(marker_id_++);
+
+    } 
+  }
+  else //Unsuccesful 
+  { 
+    if(graph_.size() == 1){//if there is only one node which has less features, replace it by the new one
+      ROS_WARN("Choosing new initial node, because it has more features");
+      if(new_node->feature_locations_2d_.size() > graph_[0]->feature_locations_2d_.size()){
+        this->resetGraph();
+        process_node_runs_ = false;
+        firstNode(new_node);
+        return true;
+      }
+    } else { //delete new_node; //is now  done by auto_ptr
+      ROS_WARN("Did not add as Node");
+    }
+  }
 
  //Info output
  QString message;
  Q_EMIT setGUIInfo(message.sprintf("%s, Camera Pose Graph Size: %iN/%iE, Duration: %f, Inliers: %i, &chi;<sup>2</sup>: %f", 
-       (cam_cam_edges.size() > num_edges_before) ? "Added" : "Ignored",
-       (int)camera_vertices.size(), (int)cam_cam_edges.size(), s.elapsed(), (int)curr_best_result_.inlier_matches.size(), optimizer_->chi2()));
+       found_match ? "Added" : "Ignored", (int)camera_vertices.size(), (int)cam_cam_edges.size(), s.elapsed(), (int)curr_best_result_.inlier_matches.size(), optimizer_->chi2()));
  process_node_runs_ = false;
  ROS_INFO("%s", qPrintable(message));
- return (cam_cam_edges.size() > num_edges_before);
+ return found_match;
 }
 
 
@@ -707,7 +711,7 @@ bool GraphManager::addEdgeToG2O(const LoadedEdge3D& edge,Node* n1, Node* n2,  bo
     assert(n1->id_ == edge.id1);
     assert(n2->id_ == edge.id2);
 
-    QMutexLocker locker(&optimizer_mutex);
+    QMutexLocker locker(&optimizer_mutex_);
     g2o::VertexSE3* v1 = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(n1->vertex_id_));
     g2o::VertexSE3* v2 = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(n2->vertex_id_));
 
@@ -762,7 +766,7 @@ bool GraphManager::addEdgeToG2O(const LoadedEdge3D& edge,Node* n1, Node* n2,  bo
     // g2o_edge->setInverseMeasurement(edge.mean.inverse());
     g2o_edge->setInformation(edge.informationMatrix);
     optimizer_->addEdge(g2o_edge);
-    ROS_INFO_STREAM("Added Edge ("<< edge.id1 << "-" << edge.id2 << ") to Optimizer:\n" << edge.mean.to_homogeneous_matrix() << "\nInformation Matrix" << edge.informationMatrix);
+    ROS_DEBUG_STREAM("Added Edge ("<< edge.id1 << "-" << edge.id2 << ") to Optimizer:\n" << edge.mean.to_homogeneous_matrix() << "\nInformation Matrix:\n" << edge.informationMatrix);
     cam_cam_edges.insert(g2o_edge);
 
     if(abs(edge.id1 - edge.id2) > ParameterServer::instance()->get<int>("predecessor_candidates")){
@@ -801,14 +805,14 @@ double GraphManager::optimizeGraphImpl(double break_criterion)
   ROS_WARN_NAMED("eval", "Loop Closures: %u, Sequential Edges: %u", loop_closures_edges, sequential_edges);
   ROS_WARN("Starting Optimization");
   double chi2 = std::numeric_limits<double>::max();
-  if(!optimization_mutex.tryLock(2/*milliseconds*/))
+  if(!optimization_mutex_.tryLock(2/*milliseconds*/))
   {
     ROS_INFO("Attempted Graph Optimization, but it is already running. Skipping.");
     return -1.0;
   }
   else //Got the lock
   {
-    optimizer_mutex.lock();
+    optimizer_mutex_.lock();
 
     //Fixation strategies
     if (ParameterServer::instance()->get<std::string>("pose_relative_to") == "previous" && graph_.size() > 2) {
@@ -839,7 +843,7 @@ double GraphManager::optimizeGraphImpl(double break_criterion)
 #else
    optimizer_->initializeOptimization();
 #endif
-    //optimizer_mutex.unlock(); //optimizer does not require the graph data structure for optimization after initialization
+    //optimizer_mutex_.unlock(); //optimizer does not require the graph data structure for optimization after initialization
 
     ROS_WARN("Optimization with %zu cams, %zu nodes and %zu edges in the graph", graph_.size(), optimizer_->vertices().size(), optimizer_->edges().size());
     Q_EMIT iamBusy(1, "Optimizing Graph", 0); 
@@ -849,7 +853,7 @@ double GraphManager::optimizeGraphImpl(double break_criterion)
       do {
         currentIt += optimizer_->optimize(ceil(stop_cond / 10));//optimize in maximally 10 steps
       } while(currentIt < stop_cond);
-      //optimizer_mutex.lock();
+      //optimizer_mutex_.lock();
       optimizer_->computeActiveErrors();
       chi2 = optimizer_->chi2();
     } 
@@ -867,8 +871,8 @@ double GraphManager::optimizeGraphImpl(double break_criterion)
     ROS_WARN_STREAM_NAMED("eval", "G2O Statistics: " << std::setprecision(15) << camera_vertices.size() 
                           << " cameras, " << cam_cam_edges.size() << " edges. " << chi2
                           << " ; chi2 "<< ", Iterations: " << currentIt);
-    optimizer_mutex.unlock();
-    optimization_mutex.unlock();
+    optimizer_mutex_.unlock();
+    optimization_mutex_.unlock();
   }
 
   Q_EMIT progress(1, "Optimizing Graph", 1); 
@@ -878,7 +882,7 @@ double GraphManager::optimizeGraphImpl(double break_criterion)
 
   ROS_INFO("A: last cam: %i", last_added_cam_vertex_id());
 
-  QMutexLocker locker(&optimizer_mutex);
+  QMutexLocker locker(&optimizer_mutex_);
   if (ParameterServer::instance()->get<std::string>("pose_relative_to") == "inaffected") {
     optimizer_->setFixed(camera_vertices, true);
   }
@@ -922,8 +926,8 @@ bool containsVertex(g2o::HyperGraph::Edge* myedge, g2o::HyperGraph::Vertex* v_to
 
 void GraphManager::deleteCameraFrame(int id)
 {
-    QMutexLocker locker(&optimizer_mutex);
-    QMutexLocker locker2(&optimization_mutex);
+    QMutexLocker locker(&optimizer_mutex_);
+    QMutexLocker locker2(&optimization_mutex_);
 
     g2o::VertexSE3* v_to_del = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(graph_[id]->vertex_id_));//last vertex
 
@@ -950,8 +954,8 @@ void GraphManager::deleteCameraFrame(int id)
 ///Actually only discount them drastically. 
 ///Thresh corresponds to a squared error
 unsigned int GraphManager::pruneEdgesWithErrorAbove(float thresh){
-    QMutexLocker locker(&optimizer_mutex);
-    QMutexLocker locker2(&optimization_mutex);
+    QMutexLocker locker(&optimizer_mutex_);
+    QMutexLocker locker2(&optimization_mutex_);
 
     optimizer_->computeActiveErrors();
     unsigned int counter = 0;
@@ -1108,7 +1112,7 @@ void GraphManager::reducePointCloud(pointcloud_type const * pc) {
 }
 
 void GraphManager::printEdgeErrors(QString filename){
-  QMutexLocker locker(&optimizer_mutex);
+  QMutexLocker locker(&optimizer_mutex_);
   std::fstream filestr;
   filestr.open (qPrintable(filename),  std::fstream::out );
 
@@ -1135,8 +1139,8 @@ double GraphManager::geodesicDiscount(g2o::HyperDijkstra& hypdij, const Matching
 
 void GraphManager::sanityCheck(float thresh){ 
   thresh *=thresh; //squaredNorm
-  QMutexLocker locker(&optimizer_mutex);
-  QMutexLocker locker2(&optimization_mutex);
+  QMutexLocker locker(&optimizer_mutex_);
+  QMutexLocker locker2(&optimization_mutex_);
   EdgeSet::iterator edge_iter = cam_cam_edges.begin();
   for(int i =0;edge_iter != cam_cam_edges.end(); edge_iter++, i++) {
     g2o::EdgeSE3* myedge = dynamic_cast<g2o::EdgeSE3*>(*edge_iter);

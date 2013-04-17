@@ -88,7 +88,7 @@ GLViewer::GLViewer(QWidget *parent)
       rotation_stepping_(1.0),
       myparent(parent),
       button_pressed_(false),
-      fast_rendering_step_(1)
+      fast_rendering_step_(0)
 {
     bg_col_[0] = bg_col_[1] = bg_col_[2] = bg_col_[3] = 0.0;//black background
     ROS_DEBUG_COND(!this->format().stereo(), "Stereo not supported");
@@ -280,7 +280,7 @@ void GLViewer::drawClouds(float xshift) {
     if(show_poses_) drawAxis(0.2);//Show origin as big axis
 
     ROS_DEBUG("Drawing %i PointClouds", cloud_list_indices.size());
-    int step = button_pressed_ ? fast_rendering_step_ : 1; //if last_draw_duration_ was bigger than 100hz, skip clouds in drawing when button pressed
+    int step = button_pressed_ ? ParameterServer::instance()->get<int>("fast_rendering_step") + fast_rendering_step_ : 1; //if last_draw_duration_ was bigger than 100hz, skip clouds in drawing when button pressed
     for(int i = 0; i<cloud_list_indices.size() && i<cloud_matrices->size(); i+=step){
         glPushMatrix();
         glMultMatrixd(static_cast<GLdouble*>( (*cloud_matrices)[i].data() ));//works as long as qreal and GLdouble are typedefs to double (might depend on hardware)
@@ -551,7 +551,7 @@ void GLViewer::updateTransforms(QList<QMatrix4x4>* transforms){
 
 void GLViewer::addPointCloud(pointcloud_type * pc, QMatrix4x4 transform){
     ROS_DEBUG("pc pointer in addPointCloud: %p (this is %p in thread %d)", pc, this, (unsigned int)QThread::currentThreadId());
-    if(ParameterServer::instance()->get<double>("squared_meshing_threshold") < 0){
+    if(!pc->isOrganized() || ParameterServer::instance()->get<double>("squared_meshing_threshold") < 0){
       pointCloud2GLPoints(pc);
     } else {
       pointCloud2GLStrip(pc);
@@ -746,7 +746,7 @@ void GLViewer::deleteLastNode(){
 
 void GLViewer::pointCloud2GLPoints(pointcloud_type * pc){
     ScopedTimer s(__FUNCTION__);
-    ROS_DEBUG("Making GL list from point-cloud pointer %p in thread %d", pc, (unsigned int)QThread::currentThreadId());
+    ROS_INFO("Making GL list from point-cloud pointer %p in thread %d", pc, (unsigned int)QThread::currentThreadId());
     GLuint cloud_list_index = glGenLists(1);
     if(!cloud_list_index) {
         ROS_ERROR("No display list could be created");
@@ -764,8 +764,8 @@ void GLViewer::pointCloud2GLPoints(pointcloud_type * pc){
 
     float depth;
     unsigned int w=pc->width, h=pc->height;
-    for(unsigned int x = 0; x < w-1; x++){
-        for(unsigned int y = 0; y < h-1; y++){
+    for(unsigned int x = 0; x < w; x++){
+        for(unsigned int y = 0; y < h; y++){
             using namespace pcl;
             const point_type* p = &pc->points[x+y*w]; //current point
             if(!(validXYZ(*p))) continue;
