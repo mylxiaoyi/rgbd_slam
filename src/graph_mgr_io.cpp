@@ -204,7 +204,7 @@ void GraphManager::saveOctomapImpl(QString filename)
         Q_EMIT setGUIStatus(QString("Autosaving preliminary octomap to ") + filename);
         co_server_.save(qPrintable(filename));
       }
-      ROS_INFO("Cleared pointcloud of Node ", node->id_);
+      ROS_INFO("Cleared pointcloud of Node %i", node->id_);
   }
 
 

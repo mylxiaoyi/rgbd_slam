@@ -309,15 +309,9 @@ void OpenNIListener::loadBag(const std::string &filename)
     if(!ParameterServer::instance()->get<bool>("use_gui")){
       Q_EMIT bagFinished();
       usleep(10000000);//10sec to allow all threads to finish (don't know how much is required)
-      std::cerr << "8\n";
-      /*if(ros::ok()){
-        ROS_ERROR("ROS Ok, but should have shutdown meanwhile");
-        exit(1);
-      }*/
-      std::cerr << "9\n";
+      abort();
     }
   }
-  std::cerr << "15\n";
 }
 
 void OpenNIListener::stereoCallback(const sensor_msgs::ImageConstPtr& visual_img_msg, const sensor_msgs::PointCloud2ConstPtr& point_cloud)
