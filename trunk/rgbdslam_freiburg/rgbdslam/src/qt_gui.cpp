@@ -498,7 +498,7 @@ void Graphical_UI::createMenus() {
 
     QAction *saveOctoAct = new QAction(tr("Save Octomap"), this);
     //saveOctoAct->setShortcuts(QKeySequence::SaveAs);
-    saveOctoAct->setStatusTip(tr("Create octomap from stored point clouds"));
+    saveOctoAct->setStatusTip(tr("Create octomap from stored point clouds and save to file"));
     saveOctoAct->setIcon(QIcon::fromTheme("document-save-as"));//doesn't work for gnome
     connect(saveOctoAct, SIGNAL(triggered()), this, SLOT(saveOctomap()));
     dataMenu->addAction(saveOctoAct);

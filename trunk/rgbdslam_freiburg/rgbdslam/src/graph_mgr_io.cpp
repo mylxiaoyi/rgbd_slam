@@ -49,6 +49,41 @@ void GraphManager::sendAllClouds(bool threaded){
     }
 }
 
+tf::StampedTransform GraphManager::computeFixedToBaseTransform(Node* node, bool invert)
+{
+    g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(node->vertex_id_));
+    if(!v){ 
+      ROS_FATAL("Nullpointer in graph at position %i!", node->vertex_id_);
+      throw std::exception();
+    }
+
+    tf::Transform computed_motion = g2o2TF(v->estimateAsSE3Quat());//get pose of point cloud w.r.t. first frame's pc
+    tf::Transform base2points = node->getBase2PointsTransform();//get pose of base w.r.t current pc at capture time
+    printTransform("base2points", base2points);
+    printTransform("computed_motion", computed_motion);
+    printTransform("init_base_pose_", init_base_pose_);
+
+    tf::Transform world2base = init_base_pose_*base2points*computed_motion*base2points.inverse();
+    tf::Transform gt_world2base = node->getGroundTruthTransform();//get mocap pose of base in map
+    tf::Transform err = gt_world2base.inverseTimes(world2base);
+
+    //makes sure things have a corresponding timestamp
+    //also avoids problems with tflistener cache size if mapping took long. Must be synchronized with tf broadcasting
+    ros::Time now = ros::Time::now(); 
+
+    printTransform("World->Base", world2base);
+    std::string fixed_frame = ParameterServer::instance()->get<std::string>("fixed_frame_name");
+    std::string base_frame  = ParameterServer::instance()->get<std::string>("base_frame_name");
+    if(base_frame.empty())
+    { //if there is no base frame defined, use frame of sensor data
+      base_frame = graph_.begin()->second->pc_col->header.frame_id;
+    }
+    if(invert){
+      return tf::StampedTransform(world2base.inverse(), now, base_frame, fixed_frame);
+    } else {
+      return tf::StampedTransform(world2base, now, fixed_frame, base_frame);
+    }
+}
 
 void GraphManager::sendAllCloudsImpl()
 {
@@ -63,51 +98,18 @@ void GraphManager::sendAllCloudsImpl()
   batch_processing_runs_ = true;
   ros::Rate r(ParameterServer::instance()->get<double>("send_clouds_rate")); //slow down a bit, to allow for transmitting to and processing in other nodes
 
-  std::string fixed_frame = ParameterServer::instance()->get<std::string>("fixed_frame_name");
-  std::string base_frame  = ParameterServer::instance()->get<std::string>("base_frame_name");
-  if(base_frame.empty()){ //if there is no base frame defined, use frame of sensor data
-    base_frame = graph_.begin()->second->pc_col->header.frame_id;
-  }
-
-  for (graph_it it = graph_.begin(); it != graph_.end(); ++it){
+  for (graph_it it = graph_.begin(); it != graph_.end(); ++it)
+  {
 
     Node* node = it->second;
     if(!node->valid_tf_estimate_) {
       ROS_INFO("Skipping node %i: No valid estimate", node->id_);
       continue;
     }
+    tf::StampedTransform base_to_fixed = this->computeFixedToBaseTransform(node, true);
+    br_.sendTransform(base_to_fixed);
+    publishCloud(node, base_to_fixed.stamp_, batch_cloud_pub_);
 
-    g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(node->vertex_id_));
-    if(!v){ 
-      ROS_ERROR("Nullpointer in graph at position %i!", it->first);
-      continue;
-    }
-
-    tf::Transform base2points = node->getBase2PointsTransform();//get pose of base w.r.t current pc at capture time
-    printTransform("base2points", base2points);
-    tf::Transform computed_motion = g2o2TF(v->estimateAsSE3Quat());//get pose of point cloud w.r.t. first frame's pc
-    printTransform("computed_motion", computed_motion);
-    printTransform("init_base_pose_", init_base_pose_);
-
-    tf::Transform world2base = init_base_pose_*base2points*computed_motion*base2points.inverse();
-    tf::Transform gt_world2base = node->getGroundTruthTransform();//get mocap pose of base in map
-    tf::Transform err = gt_world2base.inverseTimes(world2base);
-    //TODO: Compute err from relative transformations betw. time steps
-
-    //makes sure things have a corresponding timestamp
-    //also avoids problems with tflistener cache size if mapping took long. Must be synchronized with tf broadcasting
-    ros::Time now = ros::Time::now(); 
-
-    ROS_DEBUG("Sending out transform %i", it->first);
-    printTransform("World->Base", world2base);
-    br_.sendTransform(tf::StampedTransform(world2base, now, base_frame, fixed_frame));
-    //br_.sendTransform(tf::StampedTransform(err, now, fixed_frame, "/where_mocap_should_be"));
-    ROS_DEBUG("Sending out cloud %i", it->first);
-    //graph_[i]->publish("/batch_transform", now, batch_cloud_pub_);
-    publishCloud(node, now, batch_cloud_pub_);
-
-    //co_server.insertCloudCallbackCommon(*(node->pc_col.get()), world2base*base2points);
-    //tf::Transform ground_truth_tf = graph_[i]->getGroundTruthTransform();
     QString message;
     Q_EMIT setGUIInfo(message.sprintf("Sending pointcloud and map transform (%i/%i) on topics %s and /tf", it->first, (int)graph_.size(), ParameterServer::instance()->get<std::string>("individual_cloud_out_topic").c_str()) );
     r.sleep();
@@ -139,14 +141,43 @@ void GraphManager::saveIndividualClouds(QString filename, bool threaded){
 }
 
 void GraphManager::saveOctomap(QString filename, bool threaded){
-  if (ParameterServer::instance()->get<bool>("concurrent_io") && threaded) {
-    //saveOctomapImpl(filename);
-    QFuture<void> f1 = QtConcurrent::run(this, &GraphManager::saveOctomapImpl, filename);
-    //f1.waitForFinished();
+  if (ParameterServer::instance()->get<bool>("octomap_online_creation")) {
+    this->writeOctomap(filename);
+  } 
+  else{ //if not online creation, create now
+    if (ParameterServer::instance()->get<bool>("concurrent_io") && threaded) {
+      //saveOctomapImpl(filename);
+      QFuture<void> f1 = QtConcurrent::run(this, &GraphManager::saveOctomapImpl, filename);
+      //f1.waitForFinished();
+    }
+    else {
+      saveOctomapImpl(filename);
+    }
   }
-  else {
-    saveOctomapImpl(filename);
-  }
+}
+
+///Returns false if node has no valid estimate
+bool GraphManager::updateCloudOrigin(Node* node)
+{
+    if(!node->valid_tf_estimate_) {
+      ROS_INFO("Skipping node %i: No valid estimate", node->id_);
+      return false;
+    }
+    g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(node->vertex_id_));
+    if(!v){
+      ROS_ERROR("Nullpointer in graph at position %i!", node->id_);
+      return false;
+    }
+    if(node->pc_col->size() == 0){
+      ROS_INFO("Skipping Node %i, point cloud data is empty!", node->id_);
+      return false;
+    }
+    // Update the sensor pose stored in the point clouds
+    g2o::SE3Quat pose = v->estimateAsSE3Quat();
+    node->pc_col->sensor_origin_.head<3>() = pose.translation().cast<float>();
+    node->pc_col->sensor_orientation_ =  pose.rotation().cast<float>();
+    //node->pc_col->header.frame_id = ParameterServer::instance()->get<std::string>("fixed_frame_name");
+
 }
 
 void GraphManager::saveOctomapImpl(QString filename)
@@ -155,33 +186,16 @@ void GraphManager::saveOctomapImpl(QString filename)
 
   batch_processing_runs_ = true;
   Q_EMIT iamBusy(0, "Saving Octomap", 0);
-  std::string fixed_frame_id = ParameterServer::instance()->get<std::string>("fixed_frame_name");
   std::list<Node*> nodes_for_octomapping;
   unsigned int points_to_render = 0;
   { //Get the transformations from the optimizer and store them in the node's point cloud header
     QMutexLocker locker(&optimizer_mutex_);
     for (graph_it it = graph_.begin(); it != graph_.end(); ++it){
       Node* node = it->second;
-      if(!node->valid_tf_estimate_) {
-        ROS_INFO("Skipping node %i: No valid estimate", node->id_);
-        continue;
+      if(this->updateCloudOrigin(node)){
+        nodes_for_octomapping.push_back(node);
+        points_to_render += node->pc_col->size();
       }
-      g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(node->vertex_id_));
-      if(!v){ 
-        ROS_ERROR("Nullpointer in graph at position %i!", it->first);
-        continue;
-      }
-      if(node->pc_col->size() == 0){
-        ROS_INFO("Skipping Node %i, point cloud data is empty!", it->first);
-        continue;
-      }
-      nodes_for_octomapping.push_back(node);
-      // Update the sensor pose stored in the point clouds
-      g2o::SE3Quat pose = v->estimateAsSE3Quat();
-      node->pc_col->sensor_origin_.head<3>() = pose.translation().cast<float>();
-      node->pc_col->sensor_orientation_ =  pose.rotation().cast<float>();
-      node->pc_col->header.frame_id = fixed_frame_id;
-      points_to_render += node->pc_col->size();
     }
   } 
   // Now (this takes long) render the clouds into the octomap
@@ -193,20 +207,15 @@ void GraphManager::saveOctomapImpl(QString filename)
   {
       QString message;
       Q_EMIT setGUIStatus(message.sprintf("Inserting Node %i/%i into octomap", ++counter, (int)nodes_for_octomapping.size()));
-      co_server_.insertCloudCallback(node->pc_col, ParameterServer::instance()->get<double>("maximum_depth")); // Will be transformed according to sensor pose set previously
-      Q_EMIT progress(0, "Saving Octomap", counter);
+      this->renderToOctomap(node);
       rendered_points += node->pc_col->size();
       ROS_INFO("Rendered %u points of %u", rendered_points, points_to_render);
-      if(ParameterServer::instance()->get<bool>("octomap_clear_raycasted_clouds")){
-        node->clearPointCloud();
-      }
+      Q_EMIT progress(0, "Saving Octomap", counter);
       if(counter % ParameterServer::instance()->get<int>("octomap_autosave_step") == 0){
         Q_EMIT setGUIStatus(QString("Autosaving preliminary octomap to ") + filename);
-        co_server_.save(qPrintable(filename));
+        this->writeOctomap(filename);
       }
-      ROS_INFO("Cleared pointcloud of Node %i", node->id_);
   }
-
 
   Q_EMIT setGUIStatus(QString("Saving final octomap to ") + filename);
   co_server_.save(qPrintable(filename));
@@ -218,6 +227,23 @@ void GraphManager::saveOctomapImpl(QString filename)
   }
 
   batch_processing_runs_ = false;
+}
+
+void GraphManager::writeOctomap(QString filename) const
+{
+    ScopedTimer s(__FUNCTION__);
+    co_server_.save(qPrintable(filename));
+}
+
+void GraphManager::renderToOctomap(Node* node)
+{
+    ScopedTimer s(__FUNCTION__);
+    ROS_INFO("Rendering Node %i", node->id_);
+    co_server_.insertCloudCallback(node->pc_col, ParameterServer::instance()->get<double>("maximum_depth")); // Will be transformed according to sensor pose set previously
+    if(ParameterServer::instance()->get<bool>("octomap_clear_raycasted_clouds")){
+      node->clearPointCloud();
+      ROS_INFO("Cleared pointcloud of Node %i", node->id_);
+    }
 }
 
 void GraphManager::saveIndividualCloudsToFile(QString file_basename)
@@ -809,11 +835,13 @@ tf::StampedTransform GraphManager::stampedTransformInWorldFrame(const Node* node
 void GraphManager::broadcastLatestTransform(const ros::TimerEvent& event) const
 {
     //printTransform("Broadcasting cached transform", latest_transform_cache_);
+  /*
     tf::StampedTransform tmp(latest_transform_cache_, 
                              ros::Time::now(),
                              latest_transform_cache_.frame_id_,
                              latest_transform_cache_.child_frame_id_);
     broadcastTransform(tmp);
+    */
 }
 
 void GraphManager::broadcastTransform(const tf::StampedTransform& stamped_transform) const 

@@ -323,7 +323,7 @@ void GraphManager::firstNode(Node* new_node)
 
     camera_vertices.insert(reference_pose);
 
-    ROS_WARN("ADDING NODE ZERO with id %i and seq %i, v_id: %i", new_node->id_, new_node->seq_id_, new_node->vertex_id_);
+    ROS_INFO("Adding initial node with id %i and seq %i, v_id: %i", new_node->id_, new_node->seq_id_, new_node->vertex_id_);
     g2o::SE3Quat g2o_ref_se3 = tf2G2O(init_base_pose_);
     reference_pose->setEstimate(g2o_ref_se3);
     reference_pose->setFixed(true);//fix at origin
@@ -334,13 +334,13 @@ void GraphManager::firstNode(Node* new_node)
     Q_EMIT setGUIInfo(message.sprintf("Added first node with %i keypoints to the graph", (int)new_node->feature_locations_2d_.size()));
     //pointcloud_type::Ptr the_pc(new_node->pc_col); //this would delete the cloud after the_pc gets out of scope
     QMatrix4x4 latest_transform = g2o2QMatrix(g2o_ref_se3);
-    printQMatrix4x4("Latest Transform", latest_transform);
     Q_EMIT setPointCloud(new_node->pc_col.get(), latest_transform);
     Q_EMIT setFeatures(&(new_node->feature_locations_3d_));
     current_poses_.append(latest_transform);
-    ROS_DEBUG("GraphManager is thread %d, New Node is at (%p, %p)", (unsigned int)QThread::currentThreadId(), new_node, graph_[0]);
-    keyframe_ids_.push_back(new_node->id_);
-
+    this->addKeyframe(new_node->id_);
+    if(ParameterServer::instance()->get<bool>("octomap_online_creation")) { 
+      renderToOctomap(new_node);
+    }
     process_node_runs_ = false;
 }
 
@@ -660,10 +660,7 @@ bool GraphManager::addNode(Node* new_node)
 
       ROS_INFO("Adding node with id %i and seq id %i to the graph", new_node->id_, new_node->seq_id_);
       if(!edge_to_last_keyframe_found) {
-        std::stringstream ss; ss << "Keyframes: ";
-        BOOST_FOREACH(int id, keyframe_ids_){ ss << id << ", "; }
-        ROS_INFO("%s", ss.str().c_str());
-        keyframe_ids_.push_back(new_node->id_-1); //use the one before, because that one is still localized w.r.t. a keyframe
+        this->addKeyframe(new_node->id_-1);//use the id of the node before, because that one is still localized w.r.t. a keyframe. So keyframes are connected
       }
       ROS_INFO("Added Node, new graphsize: %i nodes", (int) graph_.size());
       ParameterServer* ps = ParameterServer::instance();
@@ -703,6 +700,15 @@ bool GraphManager::addNode(Node* new_node)
  return found_match;
 }
 
+void GraphManager::addKeyframe(int id)
+{
+  ScopedTimer s(__FUNCTION__);
+  keyframe_ids_.push_back(id); 
+
+  std::stringstream ss; ss << "Keyframes: ";
+  BOOST_FOREACH(int i, keyframe_ids_){ ss << i << ", "; }
+  ROS_INFO("%s", ss.str().c_str());
+}
 
 bool GraphManager::addEdgeToG2O(const LoadedEdge3D& edge,Node* n1, Node* n2,  bool largeEdge, bool set_estimate, QMatrix4x4& motion_estimate) {
     ScopedTimer s(__FUNCTION__);
@@ -897,6 +903,11 @@ double GraphManager::optimizeGraphImpl(double break_criterion)
   latest_transform_cache_ = stampedTransformInWorldFrame(newest_node, computed_motion_);
   //printTransform("Computed final transform", latest_transform_cache_);
   broadcastTransform(latest_transform_cache_);
+  if(ParameterServer::instance()->get<bool>("octomap_online_creation")) { 
+    updateCloudOrigin(newest_node);
+    renderToOctomap(newest_node);
+  }
+
 
 
   ROS_WARN("GM: 1198: no graph edges in visualzation"  );
@@ -912,6 +923,7 @@ double GraphManager::optimizeGraphImpl(double break_criterion)
   // getNeighbours(graph_.begin()->first, 1, neighbours);
 #endif
   Q_EMIT setGraph(optimizer_);
+
   return chi2; 
 }
 

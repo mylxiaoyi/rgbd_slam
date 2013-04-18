@@ -31,7 +31,7 @@ void ColorOctomapServer::reset(double resolution)
   m_octoMap.octree.setProbMiss(ps->get<double>("octomap_prob_miss"));
 }
 
-bool ColorOctomapServer::save(const char* filename)
+bool ColorOctomapServer::save(const char* filename) const
 {
   std::ofstream outfile(filename, std::ios_base::out | std::ios_base::binary);
   if (outfile.is_open()){
