@@ -182,11 +182,19 @@ protected:
     ///Applies g2o for optimization returns chi2
     double optimizeGraphImpl(double max_iter);
 
+    ///Only write (not create, not clear) existing octomap
+    void writeOctomap(QString filename) const;
+
+    ///Write current position estimate to the node's point cloud's origin
+    ///Make sure to acquire the optimizer_mutex_ before calling
+    bool updateCloudOrigin(Node* node);
     ///Instanciate the optimizer with the desired backend
     void createOptimizer(std::string backend, g2o::SparseOptimizer* optimizer = NULL);
     ///will contain the motion to the best matching node
     MatchingResult curr_best_result_; 
 
+    ///Compute the tranformation between (sensor) Base and Fixed (Map) frame
+    tf::StampedTransform computeFixedToBaseTransform(Node* node, bool invert);
     /// Suggest nodes for comparison. Suggests <sequential_targets> direct predecessors in the time sequence
     /// <geodesic_targets> nodes from the graph-neighborhood and <sample_targets> randomly chosen from the keyframes
     /// Using the graph neighborhood, has the advantage that once a loop closure is found by sampling, the edge 
@@ -241,6 +249,9 @@ protected:
     /// and the node from the motion (given in sensor frame)
     tf::StampedTransform stampedTransformInWorldFrame(const Node* node, 
                                                       const tf::Transform& computed_motion) const;
+
+    ///Add a keyframe to the list (and log keyframes)
+    void addKeyframe(int id);
 
     int last_added_cam_vertex_id(){
       return graph_[graph_.size()-1]->vertex_id_;
@@ -311,6 +322,7 @@ protected:
     ///iterate over all Nodes, save each in one pcd-file
     void saveIndividualCloudsToFile(QString filename);
     void saveOctomapImpl(QString filename);
+    void renderToOctomap(Node* node);
     void pointCloud2MeshFile(QString filename, pointcloud_type full_cloud);
 
     //RVIZ visualization stuff (also in graph_mgr_io.cpp)

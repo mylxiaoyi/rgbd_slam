@@ -53,12 +53,13 @@ void ParameterServer::defaultConfig() {
   addOption("octomap_resolution",            static_cast<double> (0.05),                "Minimal voxel size of the OctoMap, when saved directly (not when used in conjunction with octomap_server)");
   addOption("octomap_autosave_step",         static_cast<int> (50),                     "Automatically save the octomap repeatedly after insertion of this many clouds");
   addOption("octomap_clear_after_save",      static_cast<bool> (true),                  "Clear out octomap after (final) saving.");
-  addOption("octomap_clear_raycasted_clouds",static_cast<bool> (false),                  "Clear out point clouds after raycasting.");
+  addOption("octomap_clear_raycasted_clouds",static_cast<bool> (false),                 "Clear out point clouds after raycasting.");
   addOption("octomap_occupancy_threshold",   static_cast<double> (0.5),                 "Occupancy threshold for binary OctoMap");
   addOption("octomap_clamping_max",          static_cast<double> (0.999),               "Maximum value for clamping of occupancy threshold in voxels");
-  addOption("octomap_clamping_min",          static_cast<double> (0.001),                 "Minimum value for clamping of occupancy threshold in voxels");
+  addOption("octomap_clamping_min",          static_cast<double> (0.001),               "Minimum value for clamping of occupancy threshold in voxels");
   addOption("octomap_prob_hit",              static_cast<double> (0.9),                 "Octomap sensor model: Probability value for hit.");
   addOption("octomap_prob_miss",             static_cast<double> (0.4),                 "Octomap sensor model: Probability value for miss.");
+  addOption("octomap_online_creation",       static_cast<bool> (false),                 "Create the octomap during mapping. If using this, every node will be rendered to the octomap directly after they have been added to the graph (and graph optimization, if not skipped b/c of optimizer_skip_step).");
   addOption("screencast_path_prefix",        std::string(""),                           "If set: capture frames for a screencast with this path as filename-prefix.");
 
   // TF information settings 

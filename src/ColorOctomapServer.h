@@ -13,14 +13,14 @@
     ColorOctomapServer();
     virtual ~ColorOctomapServer();
     void reset(double resolution = 0.05);
-    bool save(const char* filename);
+    bool save(const char* filename) const;
     virtual void insertCloudCallback(const pointcloud_type::ConstPtr cloud, double max_range = -1.0);
     virtual void insertCloudCallbackCommon(const pointcloud_type::ConstPtr cloud,
                                            const tf::Transform& trans, double max_range);
 
   protected:
     octomap::OctomapROS<octomap::ColorOcTree> m_octoMap;
-    QFuture<void> rendering; 
+    mutable QFuture<void> rendering;  //Mutable is a hack, otherwise waitforfinished cannot be called in const function
   };
 
 #endif
