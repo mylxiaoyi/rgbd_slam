@@ -158,6 +158,7 @@ class GraphManager : public QObject {
 
     g2o::HyperGraph::VertexSet camera_vertices;
     g2o::HyperGraph::EdgeSet cam_cam_edges;
+    g2o::HyperGraph::EdgeSet current_match_edges_;
 
 #ifdef DO_FEATURE_OPTIMIZATION
     g2o::HyperGraph::EdgeSet cam_lm_edges;
@@ -175,15 +176,15 @@ class GraphManager : public QObject {
     //!Warning: This is a dangerous way to save memory. Some methods will behave undefined after this.
     ///Notable exception: optimizeGraph()
     void deleteFeatureInformation();
+
+    ///Only write (not create, not clear) existing octomap
+    void writeOctomap(QString filename) const;
 protected:
         
     ///Start over
     void resetGraph();
     ///Applies g2o for optimization returns chi2
     double optimizeGraphImpl(double max_iter);
-
-    ///Only write (not create, not clear) existing octomap
-    void writeOctomap(QString filename) const;
 
     ///Write current position estimate to the node's point cloud's origin
     ///Make sure to acquire the optimizer_mutex_ before calling

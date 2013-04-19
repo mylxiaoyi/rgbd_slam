@@ -140,23 +140,9 @@ void GraphManager::saveIndividualClouds(QString filename, bool threaded){
   }
 }
 
-void GraphManager::saveOctomap(QString filename, bool threaded){
-  if (ParameterServer::instance()->get<bool>("octomap_online_creation")) {
-    this->writeOctomap(filename);
-  } 
-  else{ //if not online creation, create now
-    if (ParameterServer::instance()->get<bool>("concurrent_io") && threaded) {
-      //saveOctomapImpl(filename);
-      QFuture<void> f1 = QtConcurrent::run(this, &GraphManager::saveOctomapImpl, filename);
-      //f1.waitForFinished();
-    }
-    else {
-      saveOctomapImpl(filename);
-    }
-  }
-}
 
-///Returns false if node has no valid estimate
+///Write current pose estimate to pcl cloud header
+///Returns false if node has no valid estimate or is empty
 bool GraphManager::updateCloudOrigin(Node* node)
 {
     if(!node->valid_tf_estimate_) {
@@ -177,7 +163,22 @@ bool GraphManager::updateCloudOrigin(Node* node)
     node->pc_col->sensor_origin_.head<3>() = pose.translation().cast<float>();
     node->pc_col->sensor_orientation_ =  pose.rotation().cast<float>();
     //node->pc_col->header.frame_id = ParameterServer::instance()->get<std::string>("fixed_frame_name");
+}
 
+void GraphManager::saveOctomap(QString filename, bool threaded){
+  if (ParameterServer::instance()->get<bool>("octomap_online_creation")) {
+    this->writeOctomap(filename);
+  } 
+  else{ //if not online creation, create now
+    if (ParameterServer::instance()->get<bool>("concurrent_io") && threaded) {
+      //saveOctomapImpl(filename);
+      QFuture<void> f1 = QtConcurrent::run(this, &GraphManager::saveOctomapImpl, filename);
+      //f1.waitForFinished();
+    }
+    else {
+      saveOctomapImpl(filename);
+    }
+  }
 }
 
 void GraphManager::saveOctomapImpl(QString filename)
@@ -238,7 +239,7 @@ void GraphManager::writeOctomap(QString filename) const
 void GraphManager::renderToOctomap(Node* node)
 {
     ScopedTimer s(__FUNCTION__);
-    ROS_INFO("Rendering Node %i", node->id_);
+    ROS_INFO("Rendering Node %i with frame %s", node->id_, node->pc_col->header.frame_id.c_str());
     co_server_.insertCloudCallback(node->pc_col, ParameterServer::instance()->get<double>("maximum_depth")); // Will be transformed according to sensor pose set previously
     if(ParameterServer::instance()->get<bool>("octomap_clear_raycasted_clouds")){
       node->clearPointCloud();

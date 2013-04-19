@@ -290,6 +290,12 @@ void OpenNIListener::loadBag(const std::string &filename)
       ROS_WARN_NAMED("eval", "Finished with optimization iteration %i.", 3);
     }
 
+    if(ParameterServer::instance()->get<bool>("octomap_online_creation")){
+      graph_mgr_->writeOctomap(QString(filename.c_str()) + "-online.ot");
+      //Now recreate (to have all clouds optimally positioned
+      ParameterServer::instance()->set<bool>("octomap_online_creation", false);
+      graph_mgr_->saveOctomap(QString(filename.c_str()) + "-offline.ot", false);
+    }
     /*
     if(graph_mgr_->pruneEdgesWithErrorAbove(1) > 0){//Mahalanobis Distance
       graph_mgr_->optimizeGraph(-100, true, QString(filename.c_str()));//Non threaded call

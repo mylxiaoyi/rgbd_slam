@@ -10,6 +10,7 @@
 
 
 #include "ColorOctomapServer.h"
+#include "scoped_timer.h"
 
 ColorOctomapServer::ColorOctomapServer() :  octomap_server::OctomapServer(), m_octoMap(0.05)
 { 
@@ -33,6 +34,7 @@ void ColorOctomapServer::reset(double resolution)
 
 bool ColorOctomapServer::save(const char* filename) const
 {
+  ScopedTimer s(__FUNCTION__);
   std::ofstream outfile(filename, std::ios_base::out | std::ios_base::binary);
   if (outfile.is_open()){
     //m_octoMap.octree.writeConst(outfile); 
@@ -55,7 +57,7 @@ bool ColorOctomapServer::save(const char* filename) const
 //Same as the other insertCloudCallback, but relies on the sensor position information in the cloud
 void ColorOctomapServer::insertCloudCallback(const pointcloud_type::ConstPtr cloud, double max_range) {
 
-  ros::WallTime startTime = ros::WallTime::now();
+  ScopedTimer s(__FUNCTION__, true); //Unconditional logging of time
 
   Eigen::Quaternionf q = cloud->sensor_orientation_;
   Eigen::Vector4f t = cloud->sensor_origin_;
@@ -72,10 +74,6 @@ void ColorOctomapServer::insertCloudCallback(const pointcloud_type::ConstPtr clo
   else {
     insertCloudCallbackCommon(pcl_cloud, trans, max_range);
   }
-
-  double total_elapsed = (ros::WallTime::now() - startTime).toSec();
-  ROS_DEBUG("Pointcloud insertion in ColorOctomapServer done (%d pts, %f sec)",
-            int(cloud->height*cloud->width), total_elapsed);
 }
 
 void ColorOctomapServer::insertCloudCallbackCommon(const pointcloud_type::ConstPtr  pcl_cloud,
