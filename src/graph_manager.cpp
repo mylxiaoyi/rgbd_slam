@@ -339,7 +339,9 @@ void GraphManager::firstNode(Node* new_node)
     current_poses_.append(latest_transform);
     this->addKeyframe(new_node->id_);
     if(ParameterServer::instance()->get<bool>("octomap_online_creation")) { 
-      renderToOctomap(new_node);
+      optimizeGraph(); //will do the following at the end:
+      //updateCloudOrigin(new_node);
+      //renderToOctomap(new_node);
     }
     process_node_runs_ = false;
 }
@@ -774,6 +776,7 @@ bool GraphManager::addEdgeToG2O(const LoadedEdge3D& edge,Node* n1, Node* n2,  bo
     optimizer_->addEdge(g2o_edge);
     ROS_DEBUG_STREAM("Added Edge ("<< edge.id1 << "-" << edge.id2 << ") to Optimizer:\n" << edge.mean.to_homogeneous_matrix() << "\nInformation Matrix:\n" << edge.informationMatrix);
     cam_cam_edges.insert(g2o_edge);
+    current_match_edges_.insert(g2o_edge); //Used if all previous vertices are fixed ("pose_relative_to" == "all")
 
     if(abs(edge.id1 - edge.id2) > ParameterServer::instance()->get<int>("predecessor_candidates")){
       loop_closures_edges++;
@@ -785,8 +788,7 @@ bool GraphManager::addEdgeToG2O(const LoadedEdge3D& edge,Node* n1, Node* n2,  bo
     if (ParameterServer::instance()->get<std::string>("pose_relative_to") == "inaffected") {
       v1->setFixed(false);
       v2->setFixed(false);
-    }
-    else if(ParameterServer::instance()->get<std::string>("pose_relative_to") == "largest_loop") {
+    } else if(ParameterServer::instance()->get<std::string>("pose_relative_to") == "largest_loop") {
       earliest_loop_closure_node_ = std::min(earliest_loop_closure_node_, edge.id1);
       earliest_loop_closure_node_ = std::min(earliest_loop_closure_node_, edge.id2);
     }
@@ -844,10 +846,27 @@ double GraphManager::optimizeGraphImpl(double break_criterion)
    if (ParameterServer::instance()->get<bool>("optimize_landmarks")){
      updateProjectionEdges();
      optimizer_->initializeOptimization(cam_lm_edges);
-   }else
+   }else if (ParameterServer::instance()->get<std::string>("pose_relative_to") == "inaffected") {
+     g2o::HyperDijkstra hypdij(optimizer_);
+     g2o::UniformCostFunction cost_function;
+     g2o::VertexSE3* new_vertex = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(graph_[graph_.size()-1]->vertex_id_));
+     hypdij.shortestPaths(new_vertex,&cost_function,4);
+     g2o::HyperGraph::VertexSet& vs = hypdij.visited();
+     optimizer_->initializeOptimization(vs);
+   } else {
      optimizer_->initializeOptimization(cam_cam_edges);
+   }
 #else
-   optimizer_->initializeOptimization();
+   if (ParameterServer::instance()->get<std::string>("pose_relative_to") == "inaffected") {
+     g2o::HyperDijkstra hypdij(optimizer_);
+     g2o::UniformCostFunction cost_function;
+     g2o::VertexSE3* new_vertex = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(graph_[graph_.size()-1]->vertex_id_));
+     hypdij.shortestPaths(new_vertex,&cost_function,4);
+     g2o::HyperGraph::VertexSet& vs = hypdij.visited();
+     optimizer_->initializeOptimization(vs);
+   } else{
+     optimizer_->initializeOptimization();
+   }
 #endif
     //optimizer_mutex_.unlock(); //optimizer does not require the graph data structure for optimization after initialization
 
@@ -904,11 +923,13 @@ double GraphManager::optimizeGraphImpl(double break_criterion)
   //printTransform("Computed final transform", latest_transform_cache_);
   broadcastTransform(latest_transform_cache_);
   if(ParameterServer::instance()->get<bool>("octomap_online_creation")) { 
-    updateCloudOrigin(newest_node);
-    renderToOctomap(newest_node);
+    if(updateCloudOrigin(newest_node)){
+      renderToOctomap(newest_node);
+      //v->setFixed(true);
+    }
   }
 
-
+  current_match_edges_.clear();
 
   ROS_WARN("GM: 1198: no graph edges in visualzation"  );
   Q_EMIT setGraphEdges(getGraphEdges());
