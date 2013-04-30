@@ -413,6 +413,12 @@ void Graphical_UI::bagRecording(bool pause_on) {
         //infoLabel->setText(message);
     }
 }
+void Graphical_UI::setOctoMapResolution() {
+  this->setParam("octomap_resolution");
+}
+void Graphical_UI::toggleOnlineVoxelMapping(bool online) {
+  ParameterServer::instance()->set("octomap_online_creation", online);
+}
 void Graphical_UI::toggleCloudStorage(bool storage) {
   ParameterServer::instance()->set("store_pointclouds", storage);
 }
@@ -472,6 +478,7 @@ void Graphical_UI::set3DDisplay(bool is_on) {
 void Graphical_UI::createMenus() {
     //these are the menus created here
     QMenu *dataMenu;
+    QMenu *octoMapMenu;
     QMenu *actionMenu;
     QMenu *viewMenu;
     QMenu *settingsMenu;
@@ -488,7 +495,7 @@ void Graphical_UI::createMenus() {
     dataMenu->addAction(quickSaveAct);
     this->addAction(quickSaveAct);
 
-    QAction *saveFeaturesAct = new QAction(tr("Save &Features"), this);
+    QAction *saveFeaturesAct = new QAction(tr("Save &Feature Map"), this);
     saveFeaturesAct->setShortcut(QString("Ctrl+F"));
     saveFeaturesAct->setStatusTip(tr("Save all feature positions and descriptions in a common coordinate frame to a yaml or xml file"));
     saveFeaturesAct->setIcon(QIcon::fromTheme("document-save"));//doesn't work for gnome
@@ -496,15 +503,7 @@ void Graphical_UI::createMenus() {
     dataMenu->addAction(saveFeaturesAct);
     this->addAction(saveFeaturesAct);
 
-    QAction *saveOctoAct = new QAction(tr("Save Octomap"), this);
-    //saveOctoAct->setShortcuts(QKeySequence::SaveAs);
-    saveOctoAct->setStatusTip(tr("Create octomap from stored point clouds and save to file"));
-    saveOctoAct->setIcon(QIcon::fromTheme("document-save-as"));//doesn't work for gnome
-    connect(saveOctoAct, SIGNAL(triggered()), this, SLOT(saveOctomap()));
-    dataMenu->addAction(saveOctoAct);
-    this->addAction(saveOctoAct);
-
-    QAction *saveAct = new QAction(tr("&Save as..."), this);
+    QAction *saveAct = new QAction(tr("&Save PC as..."), this);
     saveAct->setShortcuts(QKeySequence::SaveAs);
     saveAct->setStatusTip(tr("Save all stored point clouds with common coordinate frame"));
     saveAct->setIcon(QIcon::fromTheme("document-save-as"));//doesn't work for gnome
@@ -512,7 +511,7 @@ void Graphical_UI::createMenus() {
     dataMenu->addAction(saveAct);
     this->addAction(saveAct);
 
-    QAction *saveIndiAct = new QAction(tr("&Save Node-Wise..."), this);
+    QAction *saveIndiAct = new QAction(tr("&Save PC Node-Wise..."), this);
     saveIndiAct->setShortcut(QString("Ctrl+N"));
     saveIndiAct->setStatusTip(tr("Save stored point clouds in individual files"));
     saveAct->setIcon(QIcon::fromTheme("document-save-all"));//doesn't work for gnome
@@ -526,6 +525,14 @@ void Graphical_UI::createMenus() {
     connect(saveG2OGraphAct, SIGNAL(triggered()), this, SLOT(saveG2OGraphDialog()));
     dataMenu->addAction(saveG2OGraphAct);
     this->addAction(saveG2OGraphAct);
+
+    QAction *saveTrajectoryAct = new QAction(tr("Save Trajectory &Estimate"), this);
+    saveTrajectoryAct->setShortcut(QString("Ctrl+E"));
+    saveTrajectoryAct->setStatusTip(tr("Save trajectory estimate (and ground truth trajectory if available) for external evaluation."));
+    connect(saveTrajectoryAct, SIGNAL(triggered()), this, SLOT(saveTrajectoryDialog()));
+    dataMenu->addAction(saveTrajectoryAct);
+    this->addAction(saveTrajectoryAct);
+
 
     QAction *sendAct = new QAction(tr("&Send Model"), this);
     sendAct->setShortcut(QString("Ctrl+M"));
@@ -592,11 +599,33 @@ void Graphical_UI::createMenus() {
     dataMenu->addAction(exitAct);
     this->addAction(exitAct);
 
+    octoMapMenu = menuBar()->addMenu(tr("&OctoMap"));
 
+    QAction *setOctoMapResolutionAct = new QAction(tr("Octomap Resolution"), this);
+    //setOctoMapResolutionAct->setShortcuts(QKeySequence::SaveAs);
+    setOctoMapResolutionAct->setStatusTip(tr("Change the octomap resolution. Clears previously created maps on next update."));
+    connect(setOctoMapResolutionAct, SIGNAL(triggered()), this, SLOT(setOctoMapResolution()));
+    octoMapMenu->addAction(setOctoMapResolutionAct);
+    this->addAction(setOctoMapResolutionAct);
+
+    QAction *toggleOnlineVoxelMappingAct = new QAction(tr("&Online OctoMapping"), this);
+    toggleOnlineVoxelMappingAct->setCheckable(true);
+    toggleOnlineVoxelMappingAct->setChecked(ParameterServer::instance()->get<bool>("octomap_online_creation"));
+    toggleOnlineVoxelMappingAct->setStatusTip(tr("Toggle Online/Offline OctoMapping. Make sure to set a low octomap_resolution and/or high cloud_creation_skip_step for online mapping"));
+    connect(toggleOnlineVoxelMappingAct, SIGNAL(toggled(bool)), this, SLOT(toggleOnlineVoxelMapping(bool)));
+    octoMapMenu->addAction(toggleOnlineVoxelMappingAct);
+    this->addAction(toggleOnlineVoxelMappingAct);
+
+    QAction *saveOctoAct = new QAction(tr("Save Octomap"), this);
+    //saveOctoAct->setShortcuts(QKeySequence::SaveAs);
+    saveOctoAct->setStatusTip(tr("Create octomap from stored point clouds and save to file"));
+    saveOctoAct->setIcon(QIcon::fromTheme("document-save-as"));//doesn't work for gnome
+    connect(saveOctoAct, SIGNAL(triggered()), this, SLOT(saveOctomap()));
+    octoMapMenu->addAction(saveOctoAct);
+    this->addAction(saveOctoAct);
     //Processing Menu
     actionMenu = menuBar()->addMenu(tr("&Processing"));
 
-    /*
     QAction *newAct;
     newAct = new QAction(tr("&Reset"), this);
     newAct->setShortcut(QString("Ctrl+R"));
@@ -605,7 +634,6 @@ void Graphical_UI::createMenus() {
     connect(newAct, SIGNAL(triggered()), this, SLOT(resetCmd()));
     actionMenu->addAction(newAct);
     this->addAction(newAct);
-    */
 
     QAction *pauseAct = new QAction(tr("&Process"), this);
     pauseAct->setShortcut(QString(" "));
@@ -648,13 +676,6 @@ void Graphical_UI::createMenus() {
     connect(bagRecordingAct, SIGNAL(toggled(bool)), this, SLOT(bagRecording(bool)));
     actionMenu->addAction(bagRecordingAct);
     this->addAction(bagRecordingAct);
-
-    QAction *compareAct = new QAction(tr("Save Trajectory &Estimate"), this);
-    compareAct->setShortcut(QString("Ctrl+E"));
-    compareAct->setStatusTip(tr("Save trajectory estimate (and ground truth trajectory if available) for external evaluation."));
-    connect(compareAct, SIGNAL(triggered()), this, SLOT(saveTrajectoryDialog()));
-    actionMenu->addAction(compareAct);
-    this->addAction(compareAct);
 
 
     /*

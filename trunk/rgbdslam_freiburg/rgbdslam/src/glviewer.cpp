@@ -90,7 +90,7 @@ GLViewer::GLViewer(QWidget *parent)
       button_pressed_(false),
       fast_rendering_step_(0)
 {
-    bg_col_[0] = bg_col_[1] = bg_col_[2] = bg_col_[3] = 0.0;//black background
+    bg_col_[0] = bg_col_[1] = bg_col_[2] = bg_col_[3] = 0.01;//almost black background (almost, so that the see-through rendering bug on my pc doesn't occur
     ROS_DEBUG_COND(!this->format().stereo(), "Stereo not supported");
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding); //can make good use of more space
     viewpoint_tf_.setToIdentity();
@@ -281,7 +281,9 @@ void GLViewer::drawClouds(float xshift) {
 
     ROS_DEBUG("Drawing %i PointClouds", cloud_list_indices.size());
     int step = button_pressed_ ? ParameterServer::instance()->get<int>("fast_rendering_step") + fast_rendering_step_ : 1; //if last_draw_duration_ was bigger than 100hz, skip clouds in drawing when button pressed
-    for(int i = 0; i<cloud_list_indices.size() && i<cloud_matrices->size(); i+=step){
+    step = std::max(step,1);
+    int last_cloud = std::min(cloud_list_indices.size(), cloud_matrices->size());
+    for(int i = 0; i < last_cloud; i+=step){
         glPushMatrix();
         glMultMatrixd(static_cast<GLdouble*>( (*cloud_matrices)[i].data() ));//works as long as qreal and GLdouble are typedefs to double (might depend on hardware)
         if(show_clouds_) glCallList(cloud_list_indices[i]);
@@ -289,6 +291,7 @@ void GLViewer::drawClouds(float xshift) {
           glCallList(feature_list_indices[i]);
         }
         glPopMatrix();
+        if((last_cloud - i) <= 1.5*step) step = 1; //Draw all of the most recent clouds
     }
 
     glDisable(GL_DEPTH_TEST);
@@ -306,9 +309,11 @@ void GLViewer::drawClouds(float xshift) {
     }
     glEnable(GL_DEPTH_TEST);
     if(button_pressed_){
-      if(s.elapsed() > 0.05) { //Try to maintain high speed rendering if button is pressed
+      if(s.elapsed() > 0.15) { //Try to maintain high speed rendering if button is pressed
         fast_rendering_step_++;
         ROS_INFO("Increased renderer skipto every %d. cloud during motion", fast_rendering_step_);
+      } else if(s.elapsed() < 0.03 && fast_rendering_step_ > 0) { //Try to maintain high rendering quality, if fast enough 
+        fast_rendering_step_--;
       }
     }
 }
@@ -370,7 +375,7 @@ void GLViewer::toggleStereo(bool flag){
 void GLViewer::toggleBackgroundColor(bool flag){
   black_background_ = flag;
   if(flag){
-    bg_col_[0] = bg_col_[1] = bg_col_[2] = bg_col_[3] = 0.0;//black background
+    bg_col_[0] = bg_col_[1] = bg_col_[2] = bg_col_[3] = 0.01;//almost black background (almost, so that the see-through rendering bug on my pc doesn't occur
   }
   else{
     bg_col_[0] = bg_col_[1] = bg_col_[2] = 1.0;//white background
@@ -506,7 +511,7 @@ void GLViewer::mousePressEvent(QMouseEvent *event) {
 }
 
 void GLViewer::wheelEvent(QWheelEvent *event) {
-    zTra += ((float)event->delta())/25.0; 
+    zTra += (-zTra/50.0)*((float)event->delta())/25.0; 
     clearAndUpdate();
 }
 void GLViewer::mouseMoveEvent(QMouseEvent *event) {//TODO: consolidate setRotation methods
@@ -524,13 +529,15 @@ void GLViewer::mouseMoveEvent(QMouseEvent *event) {//TODO: consolidate setRotati
             setZRotation(zRot + 8 * dx);
             break;
         case Qt::ShiftModifier:  
-            xTra += dx/200.0;
-            yTra -= dy/200.0;
+            //Translate, weighted by zoom factor, to have smaller motions when viewing small areas
+            xTra += (-zTra/50.0)*dx/200.0;
+            yTra -= (-zTra/50.0)*dy/200.0;
       }
       clearAndUpdate();
     } else if (event->buttons() & Qt::MidButton) {
-            xTra += dx/200.0;
-            yTra -= dy/200.0;
+            //Translate, weighted by zoom factor, to have smaller motions when viewing small areas
+            xTra += (-zTra/50.0)*dx/200.0;
+            yTra -= (-zTra/50.0)*dy/200.0;
       clearAndUpdate();
     }
 
@@ -850,6 +857,7 @@ QImage GLViewer::renderList(QMatrix4x4 transform, int list_id){
 void GLViewer::setEdges(const QList<QPair<int, int> >* edge_list){
   //if(edge_list_) delete edge_list_;
   edge_list_ = *edge_list;
+  delete edge_list;
 }
 
 void GLViewer::drawEdges(){

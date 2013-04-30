@@ -12,7 +12,7 @@
   public:
     ColorOctomapServer();
     virtual ~ColorOctomapServer();
-    void reset(double resolution = 0.05);
+    void reset();
     bool save(const char* filename) const;
     virtual void insertCloudCallback(const pointcloud_type::ConstPtr cloud, double max_range = -1.0);
     virtual void insertCloudCallbackCommon(const pointcloud_type::ConstPtr cloud,

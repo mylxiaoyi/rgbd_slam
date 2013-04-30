@@ -155,9 +155,10 @@ void getTransformFromMatchesG2O(const Node* earlier_node,
   optimizer->optimize(iterations);
   optimizer->computeActiveErrors();
 
-  g2o::SE3Quat final_transformation =  cams.first->estimateAsSE3Quat().inverse();
-  transformation_estimate = final_transformation.to_homogeneous_matrix().cast<float>(); 
+  //g2o::SE3Quat final_transformation =  cams.first->estimateAsSE3Quat().inverse();
+  //transformation_estimate = final_transformation.to_homogeneous_matrix().cast<float>(); 
   
+  transformation_estimate = cams.first->estimate().cast<float>().inverse().matrix();
   /*
   std::cout << "G2O Estimates: \n"; 
   assert(feature_vertices.size() == matches.size() && "Missing Vertices for the Matches");

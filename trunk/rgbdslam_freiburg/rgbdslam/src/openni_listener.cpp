@@ -65,18 +65,18 @@ OpenNIListener::OpenNIListener(GraphManager* graph_mgr)
   data_id_(0),
   image_encoding_("rgb8")
 {
-  ParameterServer* params = ParameterServer::instance();
-  int q = params->get<int>("subscriber_queue_size");
-  std::string bagfile_name = params->get<std::string>("bagfile_name");
-  std::string visua_tpc = params->get<std::string>("topic_image_mono");
-  std::string depth_tpc = params->get<std::string>("topic_image_depth");
-  std::string cinfo_tpc = params->get<std::string>("camera_info_topic");
+  ParameterServer* ps = ParameterServer::instance();
+  int q = ps->get<int>("subscriber_queue_size");
+  std::string bagfile_name = ps->get<std::string>("bagfile_name");
+  std::string visua_tpc = ps->get<std::string>("topic_image_mono");
+  std::string depth_tpc = ps->get<std::string>("topic_image_depth");
+  std::string cinfo_tpc = ps->get<std::string>("camera_info_topic");
   ros::NodeHandle nh;
   tflistener_ = new tf::TransformListener(nh);
   if(bagfile_name.empty()){
-    std::string cloud_tpc = params->get<std::string>("topic_points");
-    std::string widev_tpc = params->get<std::string>("wide_topic");
-    std::string widec_tpc = params->get<std::string>("wide_cloud_topic");
+    std::string cloud_tpc = ps->get<std::string>("topic_points");
+    std::string widev_tpc = ps->get<std::string>("wide_topic");
+    std::string widec_tpc = ps->get<std::string>("wide_cloud_topic");
 
     //All information from Kinect
     if(!visua_tpc.empty() && !depth_tpc.empty() && !cloud_tpc.empty())
@@ -109,10 +109,10 @@ OpenNIListener::OpenNIListener(GraphManager* graph_mgr)
       ROS_INFO_STREAM("Listening to " << widev_tpc << " and " << widec_tpc );
     } 
 
-    detector_ = createDetector(params->get<std::string>("feature_detector_type"));
-    extractor_ = createDescriptorExtractor(params->get<std::string>("feature_extractor_type"));
+    detector_ = createDetector(ps->get<std::string>("feature_detector_type"));
+    extractor_ = createDescriptorExtractor(ps->get<std::string>("feature_extractor_type"));
 
-    if(params->get<bool>("concurrent_node_construction")){
+    if(ps->get<bool>("concurrent_node_construction")){
       ROS_DEBUG("Threads used by QThreadPool on this Computer %i. Will increase this by one, b/c the QtRos Thread is very lightweight", QThread::idealThreadCount());
       //QThreadPool::globalInstance()->setMaxThreadCount(QThread::idealThreadCount()*2+2);
     }
@@ -133,8 +133,8 @@ OpenNIListener::OpenNIListener(GraphManager* graph_mgr)
       ROS_INFO_STREAM("Listening to " << visua_tpc << " and " << depth_tpc);
     } 
 
-    detector_ = createDetector(params->get<std::string>("feature_detector_type"));
-    extractor_ = createDescriptorExtractor(params->get<std::string>("feature_extractor_type"));
+    detector_ = createDetector(ps->get<std::string>("feature_detector_type"));
+    extractor_ = createDescriptorExtractor(ps->get<std::string>("feature_extractor_type"));
   }
 }
 
@@ -160,10 +160,10 @@ void OpenNIListener::loadBag(const std::string &filename)
     }
     ROS_INFO("Opened Bagfile %s", filename.c_str());
 
-    ParameterServer* params = ParameterServer::instance();
-    std::string visua_tpc = params->get<std::string>("topic_image_mono");
-    std::string depth_tpc = params->get<std::string>("topic_image_depth");
-    std::string cinfo_tpc = params->get<std::string>("camera_info_topic");
+    ParameterServer* ps = ParameterServer::instance();
+    std::string visua_tpc = ps->get<std::string>("topic_image_mono");
+    std::string depth_tpc = ps->get<std::string>("topic_image_depth");
+    std::string cinfo_tpc = ps->get<std::string>("camera_info_topic");
     std::string tf_tpc = std::string("/tf");
 
     // Image topics to load for bagfiles
@@ -320,12 +320,14 @@ void OpenNIListener::loadBag(const std::string &filename)
   }
 }
 
+
 void OpenNIListener::stereoCallback(const sensor_msgs::ImageConstPtr& visual_img_msg, const sensor_msgs::PointCloud2ConstPtr& point_cloud)
 {
     ScopedTimer s(__FUNCTION__);
     ROS_INFO("Received data from stereo cam");
     ROS_WARN_ONCE_NAMED("eval", "First RGBD-Data Received");
-    if(++data_id_ % ParameterServer::instance()->get<int>("data_skip_step") != 0){ 
+    if(++data_id_ < ParameterServer::instance()->get<int>("skip_first_n_frames") 
+       || data_id_ % ParameterServer::instance()->get<int>("data_skip_step") != 0){ 
       ROS_INFO_THROTTLE(1, "Skipping Frame %i because of data_skip_step setting (this msg is only shown once a sec)", data_id_);
       return;
     };
@@ -388,8 +390,10 @@ void OpenNIListener::noCloudCallback (const sensor_msgs::ImageConstPtr& visual_i
   ROS_DEBUG("Received data from kinect");
   ParameterServer* ps = ParameterServer::instance();
 
+  if(++data_id_ < ps->get<int>("skip_first_n_frames") 
+     || data_id_ % ps->get<int>("data_skip_step") != 0)
+  { 
   // If only a subset of frames are used, skip computations but visualize if gui is running
-  if(++data_id_ % ps->get<int>("data_skip_step") != 0){ 
     ROS_INFO_THROTTLE(1, "Skipping Frame %i because of data_skip_step setting (this msg is only shown once a sec)", data_id_);
     if(ps->get<bool>("use_gui")){//Show the image, even if not using it
       //sensor_msgs::CvBridge bridge;
@@ -420,7 +424,15 @@ void OpenNIListener::noCloudCallback (const sensor_msgs::ImageConstPtr& visual_i
   //cv::Mat visual_img =  bridge.imgMsgToCv(visual_img_msg);
   cv::Mat depth_float_img = cv_bridge::toCvCopy(depth_img_msg)->image;
   //const cv::Mat& depth_float_img_big = cv_bridge::toCvShare(depth_img_msg)->image;
-  cv::Mat visual_img =  cv_bridge::toCvCopy(visual_img_msg)->image;
+  cv::Mat visual_img;
+  if(image_encoding_ == "bayer_grbg8"){
+    cv_bridge::toCvShare(visual_img_msg);
+    ROS_INFO("Converting from Bayer to RGB");
+    cv::cvtColor(cv_bridge::toCvCopy(visual_img_msg)->image, visual_img, CV_BayerGR2RGB, 3);
+  } else{
+    ROS_INFO_STREAM("Encoding: " << visual_img_msg->encoding);
+    visual_img =  cv_bridge::toCvCopy(visual_img_msg)->image;
+  }
   //const cv::Mat& visual_img_big =  cv_bridge::toCvShare(visual_img_msg)->image;
   //cv::Size newsize(320, 240);
   //cv::Mat visual_img(newsize, visual_img_big.type()), depth_float_img(newsize, depth_float_img_big.type());
@@ -464,6 +476,35 @@ void OpenNIListener::kinectCallback (const sensor_msgs::ImageConstPtr& visual_im
   ScopedTimer s(__FUNCTION__);
   ROS_DEBUG("Received data from kinect");
   ROS_WARN_ONCE_NAMED("eval", "First RGBD-Data Received");
+
+  ParameterServer* ps = ParameterServer::instance();
+
+  if(++data_id_ < ps->get<int>("skip_first_n_frames") 
+     || data_id_ % ps->get<int>("data_skip_step") != 0)
+  { 
+  // If only a subset of frames are used, skip computations but visualize if gui is running
+    ROS_INFO_THROTTLE(1, "Skipping Frame %i because of data_skip_step setting (this msg is only shown once a sec)", data_id_);
+    if(ps->get<bool>("use_gui")){//Show the image, even if not using it
+      //sensor_msgs::CvBridge bridge;
+      cv::Mat depth_float_img = cv_bridge::toCvCopy(depth_img_msg)->image;
+      //const cv::Mat& depth_float_img_big = cv_bridge::toCvShare(depth_img_msg)->image;
+      cv::Mat visual_img =  cv_bridge::toCvCopy(visual_img_msg)->image;
+      //const cv::Mat& visual_img_big =  cv_bridge::toCvShare(visual_img_msg)->image;
+      //cv::Mat visual_img, depth_float_img;
+      //cv::resize(visual_img_big, visual_img, cv::Size(), 0.25, 0.25);
+      //cv::resize(depth_float_img_big, depth_float_img, cv::Size(), 0.25, 0.25);
+      if(visual_img.rows != depth_float_img.rows || 
+         visual_img.cols != depth_float_img.cols){
+        ROS_ERROR("depth and visual image differ in size! Ignoring Data");
+        return;
+      }
+      depthToCV8UC1(depth_float_img, depth_mono8_img_); //float can't be visualized or used as mask in float format TODO: reprogram keypoint detector to use float values with nan to mask
+      image_encoding_ = visual_img_msg->encoding;
+      Q_EMIT newVisualImage(cvMat2QImage(visual_img, 0)); //visual_idx=0
+      Q_EMIT newDepthImage (cvMat2QImage(depth_mono8_img_,1));//overwrites last cvMat2QImage
+    }
+    return;
+  }
 
   //Get images into OpenCV format
   //sensor_msgs::CvBridge bridge;
