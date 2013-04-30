@@ -64,12 +64,14 @@
     <param name="config/optimizer_iterations"          value="2"/><!-- maximum of iterations in online operation (i.e., does not affect the final optimization in batch mode) -->
     <param name="config/optimizer_skip_step"           value="1"/><!-- optimize every n-th frame. Set high for offline operation -->
     <param name="config/use_icp"                       value="false"/> <!-- Ignored if ICP is not compiled in (see top of CMakeLists.txt) -->
+    <param name="config/gicp_max_cloud_size"           value="12500"/> <!-- Ignored if ICP is not compiled in (see top of CMakeLists.txt) -->
     <param name="config/backend_solver"                value="cholmod"/> <!-- Which solver to use in g2o for matrix inversion: "csparse" , "cholmod" or "pcg"  -->
     <param name="config/optimize_landmarks"            value="false"/> <!-- Include feature poses as vertices in graph optimization-->
 
     <!-- Visualization Settings -->
     <param name="config/squared_meshing_threshold"     value="0.0009"/><!-- don't triangulate over depth jumps -->
     <param name="config/visualization_skip_step"       value="1"/> <!-- draw only every nth pointcloud row and line, high values require higher squared_meshing_threshold -->
+    <param name="config/fast_rendering_step"           value="1"/>
     <param name="config/visualize_mono_depth_overlay"  value="false"/> <!-- Show Depth and Monochrome image as overlay in featureflow -->
     <param name="config/use_glwidget"                  value="true"/><!-- 3D visualization needs performance -->
     <param name="config/use_gui"                       value="true"/><!-- No visualization, e.g., on robot -->

@@ -20,7 +20,7 @@ ColorOctomapServer::ColorOctomapServer() :  octomap_server::OctomapServer(), m_o
 
 ColorOctomapServer::~ColorOctomapServer() {}
 ///Clear octomap and reset values to paramters from parameter server
-void ColorOctomapServer::reset(double resolution)
+void ColorOctomapServer::reset()
 {
   m_octoMap.octree.clear();
   ParameterServer* ps = ParameterServer::instance();
@@ -56,8 +56,8 @@ bool ColorOctomapServer::save(const char* filename) const
 
 //Same as the other insertCloudCallback, but relies on the sensor position information in the cloud
 void ColorOctomapServer::insertCloudCallback(const pointcloud_type::ConstPtr cloud, double max_range) {
-
-  ScopedTimer s(__FUNCTION__, true); //Unconditional logging of time
+  
+  ScopedTimer s(__FUNCTION__); //Unconditional logging of time
 
   Eigen::Quaternionf q = cloud->sensor_orientation_;
   Eigen::Vector4f t = cloud->sensor_origin_;
@@ -78,6 +78,11 @@ void ColorOctomapServer::insertCloudCallback(const pointcloud_type::ConstPtr clo
 
 void ColorOctomapServer::insertCloudCallbackCommon(const pointcloud_type::ConstPtr  pcl_cloud,
                                                    const tf::Transform& trans, double max_range) {
+  if(m_octoMap.octree.getResolution() != ParameterServer::instance()->get<double>("octomap_resolution")){
+    ROS_WARN("OctoMap resolution changed from %f to %f. Resetting Octomap", 
+             m_octoMap.octree.getResolution(), ParameterServer::instance()->get<double>("octomap_resolution"));
+    this->reset();
+  }
   geometry_msgs::Point origin;
   tf::pointTFToMsg(trans.getOrigin(), origin);
 

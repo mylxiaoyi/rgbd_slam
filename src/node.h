@@ -45,7 +45,7 @@
 
 #include "matching_result.h" 
 #include <Eigen/StdVector>
-
+typedef std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> > std_vector_of_eigen_vector4f;
 //!Holds the data for one graph node and provides functionality to compute relative transformations to other Nodes.
 class Node {
 public:
@@ -139,10 +139,11 @@ public:
   void reducePointCloud(double voxelfilter_size);
 	//PointCloud pc;
 	///pointcloud_type centrally defines what the pc is templated on
-  int id_;         // number of camera nodes in the graph when the node was added
-	int seq_id_;      // number of images that have been processed (even if they were not added)
-	int vertex_id_;   // id of the corresponding vertex in the g2o graph
-  bool valid_tf_estimate_;      //Flags whether the data of this node should be considered for postprocessing steps, e.g., visualization, trajectory, map creation
+  int id_;         //<number of camera nodes in the graph when the node was added
+	int seq_id_;      //<number of images that have been processed (even if they were not added)
+	int vertex_id_;   //<id of the corresponding vertex in the g2o graph
+  bool valid_tf_estimate_;      //<Flags whether the data of this node should be considered for postprocessing steps, e.g., visualization, trajectory, map creation
+  bool matchable_;        //< Flags whether the data for matching is (still) available
   pointcloud_type::Ptr pc_col;
 #ifdef USE_PCL_ICP
   pointcloud_type::Ptr filtered_pc_col; //<Used for icp. May not contain NaN
@@ -151,13 +152,15 @@ public:
 	cv::Mat feature_descriptors_;         
 
   ///backprojected 3d descriptor locations relative to cam position in homogeneous coordinates (last dimension is 1.0)
-	std::vector<Eigen::Vector4f, Eigen::aligned_allocator<Eigen::Vector4f> > feature_locations_3d_;  
+	std_vector_of_eigen_vector4f feature_locations_3d_;  
 	std::vector<float> siftgpu_descriptors;
 
   ///Where in the image are the descriptors
 	std::vector<cv::KeyPoint> feature_locations_2d_; 
   ///Contains the minimum and maximum depth in the feature's range (not used yet)
   std::vector<std::pair<float, float> > feature_depth_stats_;
+  ///Contains how often a feature has been an (inlier) match
+  std::vector<unsigned char> feature_matching_stats_;
 
 #ifdef  DO_FEATURE_OPTIMIZATION
 
@@ -175,6 +178,7 @@ public:
     this->flannIndex->knnSearch(query, indices, dists, knn, params);
   }
 
+  long getMemoryFootprint(bool print);
 protected:
   static QMutex gicp_mutex;
   static QMutex siftgpu_mutex;
@@ -208,19 +212,6 @@ protected:
                    const cv::Mat& depth,
                    const sensor_msgs::CameraInfoConstPtr& cam_info);
 
-  // Compute the transformation from matches using Eigen::umeyama
-	Eigen::Matrix4f getTransformFromMatchesUmeyama(const Node* other_node, std::vector<cv::DMatch> matches) const;
-	// Compute the transformation from matches using pcl::TransformationFromCorrespondences
-	Eigen::Matrix4f getTransformFromMatches(const Node* other_node, 
-                                          const std::vector<cv::DMatch> & matches,
-                                          bool& valid, 
-                                          float max_dist_m = -1) const;
-
-	///Get the norm of the translational part of an affine matrix (Helper for isBigTrafo)
-	void mat2dist(const Eigen::Matrix4f& t, double &dist){
-		dist = sqrt(t(0,3)*t(0,3)+t(1,3)*t(1,3)+t(2,3)*t(2,3));
-	}
-
   
   ///Retrieves and stores the transformation from base to point cloud at capturing time 
   void retrieveBase2CamTransformation();
@@ -242,4 +233,16 @@ public:
 void pairwiseObservationLikelihood(const Node* newer_node, const Node* older_node, MatchingResult& mr);
 ///Compute the RootSIFT from SIFT according to Arandjelovic and Zisserman
 void squareroot_descriptor_space(cv::Mat& feature_descriptors);
+// Compute the transformation from matches using pcl::TransformationFromCorrespondences
+Eigen::Matrix4f getTransformFromMatches(const Node* newer_node,
+                                        const Node* older_node, 
+                                        const std::vector<cv::DMatch> & matches,
+                                        bool& valid, 
+                                        float max_dist_m = -1);
+
+// Compute the transformation from matches using Eigen::umeyama
+Eigen::Matrix4f getTransformFromMatchesUmeyama(const Node* newer_node,
+                                               const Node* older_node,
+                                               std::vector<cv::DMatch> matches);
+
 #endif

@@ -112,7 +112,7 @@ void GraphManager::updateLandmarkInGraph(Landmark* lm){
     pos_relative(2) = 1.0; //FIXME instead of using an arbitrary depth value, use the correct vertex type
     return;
   }
-  Eigen::Vector3d pos_absolute = v1->estimateAsSE3Quat()*Eigen::Vector3d(pos_relative[0],pos_relative[1],pos_relative[2]);
+  Eigen::Vector3d pos_absolute = v1->estimate()*Eigen::Vector3d(pos_relative[0],pos_relative[1],pos_relative[2]);
 
   lm->g2o_vertex = new LM_vertex_type();
   lm->g2o_vertex->setId(next_vertex_id++);

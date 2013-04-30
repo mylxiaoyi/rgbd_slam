@@ -57,7 +57,7 @@ tf::StampedTransform GraphManager::computeFixedToBaseTransform(Node* node, bool 
       throw std::exception();
     }
 
-    tf::Transform computed_motion = g2o2TF(v->estimateAsSE3Quat());//get pose of point cloud w.r.t. first frame's pc
+    tf::Transform computed_motion = eigenTransf2TF(v->estimate());//get pose of point cloud w.r.t. first frame's pc
     tf::Transform base2points = node->getBase2PointsTransform();//get pose of base w.r.t current pc at capture time
     printTransform("base2points", base2points);
     printTransform("computed_motion", computed_motion);
@@ -159,9 +159,8 @@ bool GraphManager::updateCloudOrigin(Node* node)
       return false;
     }
     // Update the sensor pose stored in the point clouds
-    g2o::SE3Quat pose = v->estimateAsSE3Quat();
-    node->pc_col->sensor_origin_.head<3>() = pose.translation().cast<float>();
-    node->pc_col->sensor_orientation_ =  pose.rotation().cast<float>();
+    node->pc_col->sensor_origin_.head<3>() = v->estimate().translation().cast<float>();
+    node->pc_col->sensor_orientation_ =  v->estimate().rotation().cast<float>();
     //node->pc_col->header.frame_id = ParameterServer::instance()->get<std::string>("fixed_frame_name");
 }
 
@@ -277,13 +276,13 @@ void GraphManager::saveIndividualCloudsToFile(QString file_basename)
       continue;
     }
     /*/TODO: is all this correct?
-      tf::Transform transform = g2o2TF(v->estimateAsSE3Quat());
+      tf::Transform transform = eigenTransf2TF(v->estimate());
       tf::Transform cam2rgb;
       cam2rgb.setRotation(tf::createQuaternionFromRPY(-1.57,0,-1.57));
       cam2rgb.setOrigin(tf::Point(0,-0.04,0));
       world2base = cam2rgb*transform;
       */
-    tf::Transform pose = g2o2TF(v->estimateAsSE3Quat());
+    tf::Transform pose = eigenTransf2TF(v->estimate());
     tf::StampedTransform base2points =  node->getBase2PointsTransform();//get pose of base w.r.t current pc at capture time
     world2base = init_base_pose_*base2points*pose*base2points.inverse();
 
@@ -355,7 +354,7 @@ void GraphManager::saveAllFeaturesToFile(QString filename)
       }
 
       g2o::VertexSE3* v = dynamic_cast<g2o::VertexSE3*>(optimizer_->vertex(node->vertex_id_));
-            tf::Transform world2cam = g2o2TF(v->estimateAsSE3Quat());
+            tf::Transform world2cam = eigenTransf2TF(v->estimate());
             world2rgb = cam2rgb*world2cam;
             Eigen::Matrix4f world2rgbMat;
             pcl_ros::transformAsMatrix(world2rgb, world2rgbMat);
@@ -419,7 +418,7 @@ void GraphManager::saveAllCloudsToFile(QString filename){
         ROS_ERROR("Nullpointer in graph at position %i!", it->first);
         continue;
       }
-      tf::Transform transform = g2o2TF(v->estimateAsSE3Quat());
+      tf::Transform transform = eigenTransf2TF(v->estimate());
       world2cam = cam2rgb*transform;
       transformAndAppendPointCloud (*(node->pc_col), aggregate_cloud, world2cam, ParameterServer::instance()->get<double>("maximum_depth"));
 
@@ -535,7 +534,7 @@ void GraphManager::saveTrajectory(QString filebasename, bool with_ground_truth)
 
       ROS_ERROR_COND(!v, "Nullpointer in graph at position %i!", it->first);
 
-      tf::Transform pose = g2o2TF(v->estimateAsSE3Quat());
+      tf::Transform pose = eigenTransf2TF(v->estimate());
 
       tf::StampedTransform base2points = node->getBase2PointsTransform();//get pose of base w.r.t current pc at capture time
       tf::Transform world2base = init_base_pose_*base2points*pose*base2points.inverse();
@@ -628,9 +627,9 @@ void GraphManager::visualizeFeatureFlow3D(unsigned int marker_id, bool draw_outl
             marker_lines.colors.push_back(color_blue);
 
             marker_lines.points.push_back(
-                    pointInWorldFrame(last->feature_locations_3d_[newer_id], newer_v->estimateAsSE3Quat()));
+                    pointInWorldFrame(last->feature_locations_3d_[newer_id], newer_v->estimate()));
             marker_lines.points.push_back(
-                    pointInWorldFrame(prev->feature_locations_3d_[earlier_id], earlier_v->estimateAsSE3Quat()));
+                    pointInWorldFrame(prev->feature_locations_3d_[earlier_id], earlier_v->estimate()));
           }
         }
 
@@ -645,9 +644,9 @@ void GraphManager::visualizeFeatureFlow3D(unsigned int marker_id, bool draw_outl
           marker_lines.colors.push_back(color_blue);
 
           marker_lines.points.push_back(
-                  pointInWorldFrame(last->feature_locations_3d_[newer_id], newer_v->estimateAsSE3Quat()));
+                  pointInWorldFrame(last->feature_locations_3d_[newer_id], newer_v->estimate()));
           marker_lines.points.push_back(
-                  pointInWorldFrame(prev->feature_locations_3d_[earlier_id], earlier_v->estimateAsSE3Quat()));
+                  pointInWorldFrame(prev->feature_locations_3d_[earlier_id], earlier_v->estimate()));
         }
 
         ransac_marker_pub_.publish(marker_lines);
@@ -695,14 +694,14 @@ void GraphManager::visualizeGraphEdges() const {
             v1 = dynamic_cast<g2o::VertexSE3*>(myvertices.at(1));
             v2 = dynamic_cast<g2o::VertexSE3*>(myvertices.at(0));
 
-            point.x = v1->estimateAsSE3Quat().translation().x();
-            point.y = v1->estimateAsSE3Quat().translation().y();
-            point.z = v1->estimateAsSE3Quat().translation().z();
+            point.x = v1->estimate().translation().x();
+            point.y = v1->estimate().translation().y();
+            point.z = v1->estimate().translation().z();
             edges_marker.points.push_back(point);
             
-            point.x = v2->estimateAsSE3Quat().translation().x();
-            point.y = v2->estimateAsSE3Quat().translation().y();
-            point.z = v2->estimateAsSE3Quat().translation().z();
+            point.x = v2->estimate().translation().x();
+            point.y = v2->estimate().translation().y();
+            point.z = v2->estimate().translation().z();
             edges_marker.points.push_back(point);
         }
 
@@ -942,7 +941,9 @@ void GraphManager::drawFeatureFlow(cv::Mat& canvas, cv::Scalar line_color,
         cv::Point2f p,q; //TODO: Use sub-pixel-accuracy
         unsigned int newer_idx = curr_best_result_.inlier_matches[mtch].queryIdx;
         unsigned int earlier_idx = curr_best_result_.inlier_matches[mtch].trainIdx;
+        if(newer_idx > newernode->feature_locations_2d_.size()) break;//Added in case the feature info has been cleared
         q = newernode->feature_locations_2d_[newer_idx].pt;
+        if(earlier_idx > earliernode->feature_locations_2d_.size()) break;//Added in case the feature info has been cleared
         p = earliernode->feature_locations_2d_[earlier_idx].pt;
 
         double angle;    angle = atan2( (double) p.y - q.y, (double) p.x - q.x );

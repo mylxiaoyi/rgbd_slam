@@ -204,6 +204,9 @@ protected:
     
     //std::vector<int> getPotentialEdgeTargetsFeatures(const Node* new_node, int max_targets);
 
+    ///use matching results to update location
+    void localizationUpdate(Node* new_node, QMatrix4x4 motion_estimate);
+
 #ifdef DO_FEATURE_OPTIMIZATION
     std::vector<Landmark> landmarks;
     void updateLandmarks(const MatchingResult& match_result, Node* old_node, Node* new_node);

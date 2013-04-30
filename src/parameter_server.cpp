@@ -78,7 +78,7 @@ void ParameterServer::defaultConfig() {
   addOption("min_matches",                   static_cast<int> (20),                     "Don't try RANSAC if less than this many matches (if using SiftGPU and GLSL you should use max. 60 matches)");
   addOption("sufficient_matches",            static_cast<int> (1e9),                    "Extract no less than this many only honored by the adjustable SURF and FAST features");
   addOption("adjuster_max_iterations",       static_cast<int> (10),                     "If outside of bounds for max_kp and min_kp, retry this many times with adapted threshold");
-  addOption("use_feature_min_depth",         static_cast<bool>(true),                   "Consider the nearest point in the neighborhood of the feature as its depth, as it will dominate the motion");
+  addOption("use_feature_min_depth",         static_cast<bool>(false),                   "Consider the nearest point in the neighborhood of the feature as its depth, as it will dominate the motion");
   addOption("use_feature_mask",              static_cast<bool>(false),                  "Whether to extract features without depth");
   addOption("use_root_sift",                 static_cast<bool>(true),                   "Whether to use euclidean distance or Hellman kernel for feature comparison");
 
@@ -101,7 +101,7 @@ void ParameterServer::defaultConfig() {
   addOption("gicp_max_cloud_size",           static_cast<int> (10000),                  "Subsample for increased speed");
   addOption("emm__skip_step",                static_cast<int> (5),                      "When evaluating the transformation, subsample rows and cols with this stepping");
   addOption("emm__mark_outliers",            static_cast<bool> (false),                 "Mark outliers in the observation likelihood evaluation with colors. Red: point would have blocked the view of an earlier observation. Cyan: An earlier observation should have blocked the view to this point");
-  addOption("observability_threshold",       static_cast<double> (0.6),                 "What fraction of the aligned points are required to be in observable position (i.e. don't contradict the sensor physics)");
+  addOption("observability_threshold",       static_cast<double> (-0.6),                "What fraction of the aligned points are required to be in observable position (i.e. don't contradict the sensor physics)");
 
   //Backend
   addOption("pose_relative_to",              std::string("first"),                      "This option allows to choose which frame(s) should be set fixed during optimization: first, previous, inaffected, largest_loop. The latter sets all frames as fixed to which no transformation has been found.");
@@ -117,6 +117,7 @@ void ParameterServer::defaultConfig() {
   addOption("glwidget_without_clouds",       static_cast<bool> (false),                 "3D view should only display the graph");
   addOption("visualize_mono_depth_overlay",  static_cast<bool> (false),                 "Show Depth and Monochrome image as overlay in featureflow");
   addOption("visualization_skip_step",       static_cast<int> (1),                      "Draw only every nth pointcloud row and line, high values require higher squared_meshing_threshold ");
+  addOption("visualize_keyframes_only",      static_cast<bool> (false),                 "Do not render point cloud of non-keyframes.");
   addOption("fast_rendering_step",           static_cast<int> (1),                      "Draw only every nth pointcloud during user interaction");
   addOption("gl_point_size",                 static_cast<double> (1.0),                 "Point size, when not triangulating. See documentation of GL_POINT_SIZE.");
   addOption("gl_grid_size_xy",               static_cast<int> (0),                      "Grid size in the xy plane (sidelength in number of cell). Zero disables. Note that this is in the coordinate system of the point cloud");
@@ -137,8 +138,10 @@ void ParameterServer::defaultConfig() {
   addOption("nn_distance_ratio",             static_cast<double> (0.6),                 "Feature correspondence is valid if distance to nearest neighbour is smaller than this parameter times the distance to the 2nd neighbour. This needs to be 0.9-1.0 for SIFTGPU w/ FLANN, since SIFTGPU Features are normalized");
   addOption("keep_all_nodes",                static_cast<bool> (false),                 "Keep all nodes with 'no motion' assumption");
   addOption("keep_good_nodes",               static_cast<bool> (false),                 "Keep nodes without transformation estimation but enough features (according to min_keypoints) with 'no motion' assumption. These are not rendered in visualization.");
+  addOption("clear_non_keyframes",           static_cast<bool> (false),                 "Remove the net data of nodes when it becomes clear that they will not be used as keyframe. However, this makes matching against them impossible.");
   addOption("min_time_reported",             static_cast<double> (-1.0),                "For easy profiling. Negative: nothing should be reported");
   addOption("preserve_raster_on_save",       static_cast<bool> (false),                 "Filter NaNs when saving clouds, destroying the image raster");
+  addOption("skip_first_n_frames",           static_cast<int> (0),                      "Useful to skip start of a bagfile");
 }
 
 
