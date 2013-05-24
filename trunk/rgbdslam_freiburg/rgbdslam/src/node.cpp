@@ -1199,7 +1199,7 @@ void edgeFromMatchingResult(const Node* newer_node, const Node* older_node, cons
 bool containsNaN(const Eigen::Matrix4f& mat){
     return (mat.array() != mat.array()).any(); //No NaNs
 }
-bool edge_from_icp_alignment(bool found_transformation, const Node* newer_node, const Node* older_node, MatchingResult& mr, double ransac_quality)
+bool edge_from_icp_alignment(bool found_transformation, Node* newer_node, const Node* older_node, MatchingResult& mr, double ransac_quality)
 {
     std::string icp_method = ParameterServer::instance()->get<std::string>("icp_method") ;
     if(ParameterServer::instance()->get<bool>("use_icp"))
@@ -1218,7 +1218,7 @@ bool edge_from_icp_alignment(bool found_transformation, const Node* newer_node, 
 #ifdef USE_ICP_CODE
             if(icp_method == "gicp")
             {
-              bool converged = getRelativeTransformationTo_ICP_code(older_node,mr_icp.final_trafo, mr.final_trafo); 
+              bool converged = newer_node->getRelativeTransformationTo_ICP_code(older_node,mr_icp.final_trafo, mr.final_trafo); 
               if(!converged) return false; 
             }
 #endif  
@@ -1228,12 +1228,13 @@ bool edge_from_icp_alignment(bool found_transformation, const Node* newer_node, 
             //if(getRelativeTransformationTo_ICP_code(older_node,mr_icp.icp_trafo, mr.ransac_trafo) && //converged
             if(!containsNaN(mr_icp.final_trafo)) 
             {
-                ROS_INFO("GICP for Nodes %u and %u Successful", newer_node->id_, older_node->id_);
+                ROS_INFO("%s for Nodes %u and %u Successful", icp_method.c_str(), newer_node->id_, older_node->id_);
                 double icp_quality;
                 pairwiseObservationLikelihood(newer_node, older_node, mr_icp);
                 if(observation_criterion_met(mr_icp.inlier_points, mr_icp.outlier_points, mr_icp.occluded_points + mr_icp.inlier_points + mr_icp.outlier_points, icp_quality)
-                   && icp_quality > ransac_quality)
+                   && icp_quality >= ransac_quality)
                 { //This signals a valid result:
+                    ROS_INFO("Using %s estimate for Nodes %u and %u", icp_method.c_str(), newer_node->id_, older_node->id_);
                     edgeFromMatchingResult(newer_node, older_node, mr_icp.final_trafo, mr);
                     return true;
                 }

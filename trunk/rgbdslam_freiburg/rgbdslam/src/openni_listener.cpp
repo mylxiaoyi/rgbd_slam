@@ -430,7 +430,7 @@ void OpenNIListener::noCloudCallback (const sensor_msgs::ImageConstPtr& visual_i
     ROS_INFO("Converting from Bayer to RGB");
     cv::cvtColor(cv_bridge::toCvCopy(visual_img_msg)->image, visual_img, CV_BayerGR2RGB, 3);
   } else{
-    ROS_INFO_STREAM("Encoding: " << visual_img_msg->encoding);
+    ROS_DEBUG_STREAM("Encoding: " << visual_img_msg->encoding);
     visual_img =  cv_bridge::toCvCopy(visual_img_msg)->image;
   }
   //const cv::Mat& visual_img_big =  cv_bridge::toCvShare(visual_img_msg)->image;
