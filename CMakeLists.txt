@@ -1,9 +1,12 @@
+cmake_minimum_required(VERSION 2.4.6)
+project(rgbd_slam)
+
 #########################################################
 ### CONFIG ##############################################
 #########################################################
 # 1, if SiftGPU should be used. For additional information
 # see README
-set(USE_SIFT_GPU        1)
+set(USE_SIFT_GPU        0)
 set(ENV{SIFT_GPU_MODE}		2) #CUDA = 1, GLSL = 2
 set(ENV{SIFT_GPU_CUDA_PATH}	/usr/local/cuda)	
 	
@@ -20,9 +23,6 @@ endif ("${ROS_PARALLEL_JOBS}" EQUAL "")
 
 set(ROS_COMPILE_FLAGS ${ROS_COMPILE_FLAGS} -fopenmp)
 
-cmake_minimum_required(VERSION 2.4.6)
-include($ENV{ROS_ROOT}/core/rosbuild/rosbuild.cmake)
-
 # Set the build type.  Options are:
 #  Coverage       : w/ debug symbols, w/o optimization, w/ code-coverage
 #  Debug          : w/ debug symbols, w/o optimization
@@ -34,31 +34,43 @@ set(ROS_BUILD_TYPE RelWithDebInfo)
 IF (${USE_GL2PS})
   add_definitions(-DGL2PS)
 ENDIF (${USE_GL2PS})
-set(CMAKE_CXX_FLAGS "-O3")
+set(CMAKE_CXX_FLAGS "-O3 -g")
 #is used for compiling the libraries 
 set(USE_GICP 0)
 IF (${USE_GICP_BIN} OR ${USE_GICP_CODE})
 	set(USE_GICP 1)
 ENDIF (${USE_GICP_BIN} OR ${USE_GICP_CODE})
 
-rosbuild_init()
-
 #set the default path for built executables to the "bin" directory
 set(EXECUTABLE_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/bin)
 #set the default path for built libraries to the "lib" directory
 set(LIBRARY_OUTPUT_PATH ${PROJECT_SOURCE_DIR}/lib)
 
-#uncomment if you have defined messages
-#rosbuild_genmsg()
-#uncomment if you have defined services
-rosbuild_gensrv()
-#common commands for building c++ executables and libraries
-#rosbuild_add_library(${PROJECT_NAME} src/example.cpp)
-#target_link_libraries(${PROJECT_NAME} another_library) 
-#rosbuild_add_boost_directories()
-#rosbuild_link_boost(${PROJECT_NAME} thread)
-#rosbuild_add_executable(example examples/example.cpp)
+find_package(catkin REQUIRED COMPONENTS 
+	roscpp 
+	rospy 
+	roslib 
+	tf 
+	octomap_server 
+	octomap_ros 
+	pcl_conversions
+	cv_bridge
+	message_generation
+	std_msgs)
 
+add_service_files(
+	FILES
+	rgbdslam_ros_ui_b.srv
+	rgbdslam_ros_ui_f.srv
+	rgbdslam_ros_ui_s.srv
+	rgbdslam_ros_ui.srv
+)
+
+generate_messages(DEPENDENCIES std_msgs)
+
+catkin_package(
+	CATKIN_DEPENDS message_runtime
+)
 
 ##############################################################################
 # Required 3rd party
@@ -67,23 +79,33 @@ rosbuild_gensrv()
 #############################
 # Octomap ###################
 #############################
-find_package(octomap REQUIRED)
-include_directories(${OCTOMAP_INCLUDE_DIRS})
-link_directories(${OCTOMAP_LIBRARY_DIRS})
+#find_package(octomap REQUIRED)
+set(OCTOMAP_INCLUDE_DIRS "/home/mylxiaoyi/study/myros_build/src/rgbd_slam/thirdparty/octomap/octomap/include")
+set(OCTOMAP_LIBRARY_DIRS "/home/mylxiaoyi/study/myros_build/src/rgbd_slam/thirdparty/octomap/lib")
+set(OCTOMAP_LIBRARIES octomap octomath octovis dynamicedt3d)
+find_package(PCL REQUIRED COMPONENTS common)
+include_directories(
+	${catkin_INCLUDE_DIRS}
+	${OCTOMAP_INCLUDE_DIRS} 
+	${PCL_INCLUDE_DIRS}
+	"/home/mylxiaoyi/study/g2o"
+	"/home/mylxiaoyi/study/g2o/build")
+link_directories(${OCTOMAP_LIBRARY_DIRS}
+	"/home/mylxiaoyi/study/g2o/lib")
 link_libraries(${OCTOMAP_LIBRARIES})
 
 #############################
 # Qt ########################
 #############################
 # http://qtnode.net/wiki/Qt4_with_cmake
-find_package(Qt4 REQUIRED)
-SET(QT_USE_QTXML TRUE)
-SET(QT_USE_QTOPENGL TRUE)
-ADD_DEFINITIONS(-DQT_NO_KEYWORDS)
-include(${QT_USE_FILE})
+find_package(Qt5 REQUIRED COMPONENTS OpenGL Xml Concurrent) 
+SET(QT_USE_QTXML TRUE) 
+SET(QT_USE_QTOPENGL TRUE) 
+
+SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC -std=c++11")
 
 # This is necessary as all ui files etc will get dumped in the bottom of then binary directory. 
-include_directories(${CMAKE_CURRENT_BINARY_DIR} ${QT_QTOPENGL_INCLUDE_DIR} external/gicp/ann_1.1.2/include/ANN)
+include_directories(${CMAKE_CURRENT_BINARY_DIR} ${Qt5OpenGL_INCLUDE_DIRS} ${Qt5Xml_INCLUDE_DIRS} ${Qt5Concurrent_INCLUDE_DIRS} external/gicp/ann_1.1.2/include/ANN)
 
 #get_directory_property(clean ADDITIONAL_MAKE_CLEAN_FILES)
 #SET(clean external/siftgpu/linux/bin/libsiftgpu.so)
@@ -92,10 +114,6 @@ include_directories(${CMAKE_CURRENT_BINARY_DIR} ${QT_QTOPENGL_INCLUDE_DIR} exter
 LINK_DIRECTORIES(${LIBRARY_OUTPUT_PATH})
 SET(${CMAKE_LIBRARY_PATH} ${LIBRARY_OUTPUT_PATH})
 #SET(CMAKE_INCLUDE_DIRECTORIES_PROJECT_BEFORE TRUE)
-
-find_package(libg2o REQUIRED)
-ADD_DEFINITIONS(-DDO_FEATURE_OPTIMIZATION)
-
 
 #Only possible when not subscribing to point cloud topic. Possibly dangerous anyway, but halves storage space per point cloud
 #ADD_DEFINITIONS(-DRGB_IS_4TH_DIM) 
@@ -178,13 +196,14 @@ include_directories(${OpenCV_INCLUDE_DIRS} external/ /usr/include/suitesparse/)
 #############################
 # Eigen ####################
 #############################
-find_package(Eigen)
-IF(Eigen_FOUND)
-  include_directories(${EIGEN_INCLUDE_DIRS})
-  add_definitions(${EIGEN_DEFINITIONS})
-ELSE(Eigen_FOUND)
+find_package(Eigen3)
+IF(Eigen3_FOUND)
+  include_directories(${EIGEN3_INCLUDE_DIRS})
+  add_definitions(${EIGEN3_DEFINITIONS})
+  MESSAGE("Eigen3 was found\n")
+ELSE(Eigen3_FOUND)
   MESSAGE("Eigen package was not found. This is OK FOR ROS ELECTRIC, bad for fuerte\n")
-ENDIF(Eigen_FOUND)
+ENDIF(Eigen3_FOUND)
 
 ##############################################################################
 # Some QT Magic (MOC Creation)
@@ -194,9 +213,9 @@ file(GLOB QT_FORMS RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} ui/*.ui)
 file(GLOB QT_RESOURCES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} resources/*.qrc)
 file(GLOB_RECURSE QT_MOC RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} FOLLOW_SYMLINKS include/local/*.hpp src/qtros.h src/openni_listener.h src/qt_gui.h src/graph_manager.h src/glviewer.h src/ros_service_ui.h)
 
-QT4_ADD_RESOURCES(QT_RESOURCES_CPP ${QT_RESOURCES})
-QT4_WRAP_UI(QT_FORMS_HPP ${QT_FORMS})
-QT4_WRAP_CPP(QT_MOC_HPP ${QT_MOC})  
+QT5_ADD_RESOURCES(QT_RESOURCES_CPP ${QT_RESOURCES})
+QT5_WRAP_UI(QT_FORMS_HPP ${QT_FORMS})
+QT5_WRAP_CPP(QT_MOC_HPP ${QT_MOC})  
 
 ##############################################################################
 # Sources to Compile
@@ -213,13 +232,13 @@ file(GLOB_RECURSE QT_SOURCES RELATIVE ${CMAKE_CURRENT_SOURCE_DIR} FOLLOW_SYMLINK
 ##############################################################################
 # Binaries
 ##############################################################################
-rosbuild_add_executable(rgbdslam ${QT_SOURCES} ${QT_RESOURCES_CPP} ${QT_FORMS_HPP} ${QT_MOC_HPP})
+add_executable(rgbdslam ${QT_SOURCES} ${QT_RESOURCES_CPP} ${QT_FORMS_HPP} ${QT_MOC_HPP})
 
 #set libs
-#SET(G2O_LIBS cholmod g2o_core g2o_stuff g2o_types_slam3d g2o_solver_cholmod g2o_solver_pcg g2o_solver_csparse cxsparse g2o_incremental)
+SET(libg2o_LIBRARIES cholmod g2o_core g2o_stuff g2o_types_slam3d g2o_solver_cholmod g2o_solver_pcg g2o_solver_csparse cxsparse g2o_incremental g2o_csparse_extension)
 SET(G2O_LIBS ${libg2o_LIBRARIES} cholmod cxsparse)
 #SET(LIBS_LINK GL GLU -lgl2ps ${G2O_LIBS} ${QT_LIBRARIES} ${QT_QTOPENGL_LIBRARY} ${GLUT_LIBRARY} ${OPENGL_LIBRARY} ${OpenCV_LIBS})
-SET(LIBS_LINK GL GLU ${G2O_LIBS} ${QT_LIBRARIES} ${QT_QTOPENGL_LIBRARY} ${GLUT_LIBRARY} ${OPENGL_LIBRARY} ${OpenCV_LIBS} -lboost_signals -lrt -loctomap -loctomap_server -loctomath)
+SET(LIBS_LINK GL GLU ${G2O_LIBS} ${QT_LIBRARIES} ${QT_QTOPENGL_LIBRARY} ${GLUT_LIBRARY} ${OPENGL_LIBRARY} ${OpenCV_LIBS} -lboost_signals -lrt -loctomap -loctomap_server -loctomath ${Qt5OpenGL_LIBRARIES} ${Qt5Xml_LIBRARIES} ${Qt5Concurrent_LIBRARIES})
 
 IF (${USE_SIFT_GPU})
  	SET(LIBS_LINK ${LIBS_LINK} siftgpu)
@@ -231,11 +250,12 @@ IF (${USE_GICP})
  	SET(LIBS_LINK ${LIBS_LINK} gicp ANN gsl gslcblas)
 ENDIF (${USE_GICP})
 #link libraries
-target_link_libraries(rgbdslam ${LIBS_LINK})
+target_link_libraries(rgbdslam ${LIBS_LINK} ${catkin_LIBRARIES})
+add_dependencies(rgbdslam ${PROJECT_NAME}_gencpp)
 
  
 IF (${USE_GICP})
   set(ROS_COMPILE_FLAGS ${ROS_COMPILE_FLAGS} -fpermissive)
-  rosbuild_add_library(gicp external/gicp/bfgs_funcs.cpp external/gicp/gicp.cpp external/gicp/optimize.cpp external/gicp/scan.cpp external/gicp/transform.cpp)
+  add_library(gicp external/gicp/bfgs_funcs.cpp external/gicp/gicp.cpp external/gicp/optimize.cpp external/gicp/scan.cpp external/gicp/transform.cpp)
 ENDIF (${USE_GICP})
 

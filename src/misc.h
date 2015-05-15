@@ -34,7 +34,7 @@ template <typename T >
 QMatrix4x4 eigenTF2QMatrix(const T& transf) 
 {
   Eigen::Matrix<qreal, 4, 4, Eigen::RowMajor> m = transf.matrix();
-  QMatrix4x4 qmat( static_cast<qreal*>( m.data() )  );
+  QMatrix4x4 qmat( (float*)( m.data() )  );
   printQMatrix4x4("From Eigen::Transform", qmat); 
   return qmat;
 }

@@ -16,7 +16,7 @@
 
 
 //Documentation see header file
-#include "pcl/ros/conversions.h"
+#include "pcl/conversions.h"
 #include <pcl/io/io.h>
 //#include "pcl/common/transform.h"
 #include "pcl_ros/transforms.h"
@@ -214,8 +214,8 @@ void OpenNIListener::loadBag(const std::string &filename)
         if (tf_msg) {
           //if(tf_msg->transforms[0].header.frame_id == "/kinect") continue;//avoid destroying tf tree if odom is used
           //prevents missing callerid warning
-          boost::shared_ptr<std::map<std::string, std::string> > msg_header_map = tf_msg->__connection_header;
-          (*msg_header_map)["callerid"] = "rgbdslam";
+          //boost::shared_ptr<std::map<std::string, std::string> > msg_header_map = tf_msg->__connection_header;
+          //(*msg_header_map)["callerid"] = "rgbdslam";
           tf_pub_.publish(tf_msg);
           ROS_DEBUG("Found Message of %s", tf_tpc.c_str());
           last_tf = tf_msg->transforms[0].header.stamp;
@@ -562,7 +562,7 @@ void OpenNIListener::cameraCallback(cv::Mat visual_img,
   Q_EMIT setGUIStatus("Computing Keypoints and Features");
   Node* node_ptr = new Node(visual_img, detector_, extractor_, point_cloud, depth_mono8_img);
 
-  retrieveTransformations(point_cloud->header, node_ptr);
+  retrieveTransformations(pcl_conversions::fromPCL(point_cloud->header), node_ptr);
   callProcessing(visual_img, node_ptr);
 }
 

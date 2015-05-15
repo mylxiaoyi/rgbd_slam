@@ -33,6 +33,8 @@
 #include "misc2.h"
 #include "scoped_timer.h"
 
+#include <pcl/common/distances.h>
+
 #ifndef GL_MULTISAMPLE
 #define GL_MULTISAMPLE  0x809D
 #endif
@@ -273,7 +275,7 @@ void GLViewer::drawClouds(float xshift) {
     glRotatef(x_steps*rotation_stepping_, 1.0, 0.0, 0.0);
     glRotatef(y_steps*rotation_stepping_, 0.0, 1.0, 0.0);
     glRotatef(z_steps*rotation_stepping_, 0.0, 0.0, 1.0);
-    glMultMatrixd(static_cast<GLdouble*>( viewpoint_tf_.data() ));//works as long as qreal and GLdouble are typedefs to double (might depend on hardware)
+    glMultMatrixd((GLdouble*)( viewpoint_tf_.data() ));//works as long as qreal and GLdouble are typedefs to double (might depend on hardware)
     if(show_grid_) {
       drawGrid(); //Draw a 10x10 grid with 1m x 1m cells
     }
@@ -285,7 +287,7 @@ void GLViewer::drawClouds(float xshift) {
     int last_cloud = std::min(cloud_list_indices.size(), cloud_matrices->size());
     for(int i = 0; i < last_cloud; i+=step){
         glPushMatrix();
-        glMultMatrixd(static_cast<GLdouble*>( (*cloud_matrices)[i].data() ));//works as long as qreal and GLdouble are typedefs to double (might depend on hardware)
+        glMultMatrixd((GLdouble*)( (*cloud_matrices)[i].data() ));//works as long as qreal and GLdouble are typedefs to double (might depend on hardware)
         if(show_clouds_) glCallList(cloud_list_indices[i]);
         if(show_features_ && feature_list_indices.size()>i){
           glCallList(feature_list_indices[i]);
@@ -299,7 +301,7 @@ void GLViewer::drawClouds(float xshift) {
 
     for(int i = 0; i<cloud_list_indices.size() && i<cloud_matrices->size(); i++){
         glPushMatrix();
-        glMultMatrixd(static_cast<GLdouble*>( (*cloud_matrices)[i].data() ));//works as long as qreal and GLdouble are typedefs to double (might depend on hardware)
+        glMultMatrixd((GLdouble*)( (*cloud_matrices)[i].data() ));//works as long as qreal and GLdouble are typedefs to double (might depend on hardware)
         if(show_poses_) drawAxis((i + 1 == cloud_list_indices.size()) ? 0.5:0.075); //Draw last pose Big
         if(show_ids_) {
           glColor4f(1-bg_col_[0],1-bg_col_[1],1-bg_col_[2],1.0); //inverse of bg color
@@ -557,7 +559,7 @@ void GLViewer::updateTransforms(QList<QMatrix4x4>* transforms){
 }
 
 void GLViewer::addPointCloud(pointcloud_type * pc, QMatrix4x4 transform){
-    ROS_DEBUG("pc pointer in addPointCloud: %p (this is %p in thread %d)", pc, this, (unsigned int)QThread::currentThreadId());
+    ROS_DEBUG("pc pointer in addPointCloud: %p (this is %p in thread %p)", pc, this, QThread::currentThreadId());
     if(!pc->isOrganized() || ParameterServer::instance()->get<double>("squared_meshing_threshold") < 0){
       pointCloud2GLPoints(pc);
     } else {
@@ -608,7 +610,7 @@ void GLViewer::addFeatures(const std::vector<Eigen::Vector4f, Eigen::aligned_all
 
 void GLViewer::pointCloud2GLStrip(pointcloud_type * pc){
     ScopedTimer s(__FUNCTION__);
-    ROS_DEBUG("Making GL list from point-cloud pointer %p in thread %d", pc, (unsigned int)QThread::currentThreadId());
+    ROS_DEBUG("Making GL list from point-cloud pointer %p in thread %p", pc, QThread::currentThreadId());
     GLuint cloud_list_index = glGenLists(1);
     if(!cloud_list_index) {
         ROS_ERROR("No display list could be created");
@@ -638,10 +640,10 @@ void GLViewer::pointCloud2GLStrip(pointcloud_type * pc){
           
                 const point_type* ul = &pc->points[x+y*w]; //current point (upper right)
                 if(validXYZ(*ul)){ //ul, ur, ll all valid
-                  depth = squaredEuclideanDistance(*ul,origin);
-                  if (squaredEuclideanDistance(*ul,*ll)/depth <= mesh_thresh  and 
-                      squaredEuclideanDistance(*ul,*ll)/depth <= mesh_thresh  and
-                      squaredEuclideanDistance(*ur,*ll)/depth <= mesh_thresh){
+                  depth = pcl::squaredEuclideanDistance(*ul,origin);
+                  if (pcl::squaredEuclideanDistance(*ul,*ll)/depth <= mesh_thresh  and 
+                      pcl::squaredEuclideanDistance(*ul,*ll)/depth <= mesh_thresh  and
+                      pcl::squaredEuclideanDistance(*ur,*ll)/depth <= mesh_thresh){
                     glBegin(GL_TRIANGLE_STRIP);
                     strip_on = true;
                     flip = false; //correct order, upper first
@@ -753,7 +755,7 @@ void GLViewer::deleteLastNode(){
 
 void GLViewer::pointCloud2GLPoints(pointcloud_type * pc){
     ScopedTimer s(__FUNCTION__);
-    ROS_INFO("Making GL list from point-cloud pointer %p in thread %d", pc, (unsigned int)QThread::currentThreadId());
+    ROS_INFO("Making GL list from point-cloud pointer %p in thread %p", pc, QThread::currentThreadId());
     GLuint cloud_list_index = glGenLists(1);
     if(!cloud_list_index) {
         ROS_ERROR("No display list could be created");
@@ -788,7 +790,7 @@ void GLViewer::pointCloud2GLPoints(pointcloud_type * pc){
 
 void GLViewer::pointCloud2GLList(pointcloud_type const * pc){
     ScopedTimer s(__FUNCTION__);
-    ROS_DEBUG("Making GL list from point-cloud pointer %p in thread %d", pc, (unsigned int)QThread::currentThreadId());
+    ROS_DEBUG("Making GL list from point-cloud pointer %p in thread %p", pc, QThread::currentThreadId());
     GLuint cloud_list_index = glGenLists(1);
     if(!cloud_list_index) {
         ROS_ERROR("No display list could be created");
@@ -813,16 +815,16 @@ void GLViewer::pointCloud2GLList(pointcloud_type const * pc){
             const point_type* pi = &pc->points[x+y*w]; //current point
 
             if(!(validXYZ(*pi))) continue;
-            depth = squaredEuclideanDistance(*pi,origin);
+            depth = pcl::squaredEuclideanDistance(*pi,origin);
 
             const point_type* pl = &pc->points[(x+1)+(y+1)*w]; //one right-down
-            if(!(validXYZ(*pl)) or squaredEuclideanDistance(*pi,*pl)/depth > mesh_thresh)  
+            if(!(validXYZ(*pl)) or pcl::squaredEuclideanDistance(*pi,*pl)/depth > mesh_thresh)  
               continue;
 
             const point_type* pj = &pc->points[(x+1)+y*w]; //one right
             if(validXYZ(*pj)
-               and squaredEuclideanDistance(*pi,*pj)/depth <= mesh_thresh  
-               and squaredEuclideanDistance(*pj,*pl)/depth <= mesh_thresh){
+               and pcl::squaredEuclideanDistance(*pi,*pj)/depth <= mesh_thresh  
+               and pcl::squaredEuclideanDistance(*pj,*pl)/depth <= mesh_thresh){
               drawTriangle(*pi, *pj, *pl);
             }
             const point_type* pk = &pc->points[(x)+(y+1)*w]; //one down

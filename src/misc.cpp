@@ -29,6 +29,8 @@
 #include "g2o/types/slam3d/vertex_se3.h"
 
 #include <pcl_ros/transforms.h>
+#include <pcl/common/distances.h>
+#include <pcl_conversions/pcl_conversions.h>
 
 #if CV_MAJOR_VERSION > 2 || CV_MINOR_VERSION >= 4
 #include "opencv2/core/core.hpp"
@@ -65,7 +67,7 @@ void logTransform(QTextStream& out, const tf::Transform& t, double timestamp, co
 QMatrix4x4 g2o2QMatrix(const g2o::SE3Quat se3) {
     Eigen::Matrix<double, 4, 4> m = se3.to_homogeneous_matrix(); //_Matrix< 4, 4, double >
     ROS_DEBUG_STREAM("Eigen Matrix:\n" << m);
-    QMatrix4x4 qmat( static_cast<qreal*>( m.data() )  );
+    QMatrix4x4 qmat( reinterpret_cast<float*>( m.data() )  );
     // g2o/Eigen seems to use a different row-major/column-major array layout
     printQMatrix4x4("from conversion", qmat.transposed());//thus the transposes
     return qmat.transposed();//thus the transposes
@@ -554,7 +556,7 @@ pointcloud_type* createXYZRGBPointCloud (const sensor_msgs::ImageConstPtr& depth
 {
   ScopedTimer s(__FUNCTION__);
   pointcloud_type* cloud (new pointcloud_type() );
-  cloud->header.stamp     = depth_msg->header.stamp;
+  cloud->header.stamp     = pcl_conversions::toPCL(depth_msg->header.stamp);
   cloud->header.frame_id  = rgb_msg->header.frame_id;
   cloud->is_dense         = false; //single point of view, 2d rasterized NaN where no depth value was found
 
@@ -797,7 +799,7 @@ float getMinDepthInNeighborhood(const cv::Mat& depth, cv::Point2f center, float 
 
 
 //#include "parameter_server.h" //For pointcloud definitions
-#include <pcl/ros/conversions.h>
+#include <pcl/conversions.h>
 //#include <pcl_ros/transforms.h>
 
 //#include <Eigen/Core>

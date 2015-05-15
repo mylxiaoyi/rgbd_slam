@@ -453,8 +453,8 @@ bool GraphManager::nodeComparisons(Node* new_node,
       ROS_INFO("Comparing new node (%i) with previous node %i", new_node->id_, prev_frame->id_);
       mr = new_node->matchNodePair(prev_frame);
       if(mr.edge.id1 > 0 && mr.edge.id2 > 0) {//Found trafo
-        ros::Time time1 = prev_frame->pc_col->header.stamp;
-        ros::Time time2 = new_node->pc_col->header.stamp;
+        ros::Time time1 = pcl_conversions::fromPCL(prev_frame->pc_col->header.stamp);
+        ros::Time time2 = pcl_conversions::fromPCL(new_node->pc_col->header.stamp);
         ros::Duration delta_time =  time2 - time1;
         if(!isBigTrafo(mr.edge.mean) || !isSmallTrafo(mr.edge.mean, delta_time.toSec())){ //Found trafo, but bad trafo (too small to big)
             ROS_WARN("Transformation not within bounds. Did not add as Node");
@@ -539,7 +539,7 @@ bool GraphManager::nodeComparisons(Node* new_node,
               ROS_INFO("new node has id %i", new_node->id_);
               assert(graph_[mr.edge.id1]);
 
-              ros::Duration delta_time = new_node->pc_col->header.stamp - graph_[mr.edge.id1]->pc_col->header.stamp;
+              ros::Duration delta_time = pcl_conversions::fromPCL(new_node->pc_col->header.stamp) - pcl_conversions::fromPCL(graph_[mr.edge.id1]->pc_col->header.stamp);
               if (isSmallTrafo(mr.edge.mean, delta_time.toSec()) &&
                   addEdgeToG2O(mr.edge,graph_[mr.edge.id1],new_node, isBigTrafo(mr.edge.mean), mr.inlier_matches.size() > curr_best_result_.inlier_matches.size(), curr_motion_estimate))
                 { 
@@ -567,7 +567,7 @@ bool GraphManager::nodeComparisons(Node* new_node,
                 //mr.edge.informationMatrix *= geodesicDiscount(hypdij, mr);
               //ROS_INFO_STREAM("XX Information Matrix for Edge (" << mr.edge.id1 << "<->" << mr.edge.id2 << "\n" << mr.edge.informationMatrix);
 
-              ros::Duration delta_time = new_node->pc_col->header.stamp - graph_[mr.edge.id1]->pc_col->header.stamp;
+              ros::Duration delta_time = pcl_conversions::fromPCL(new_node->pc_col->header.stamp) - pcl_conversions::fromPCL(graph_[mr.edge.id1]->pc_col->header.stamp);
               if (isSmallTrafo(mr.edge.mean, delta_time.toSec()) &&
                   addEdgeToG2O(mr.edge, node_to_compare, new_node, isBigTrafo(mr.edge.mean), mr.inlier_matches.size() > curr_best_result_.inlier_matches.size(), curr_motion_estimate))
               {

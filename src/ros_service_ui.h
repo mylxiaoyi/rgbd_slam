@@ -21,10 +21,10 @@
 #include "glviewer.h"
 #include "parameter_server.h"
 #include <QObject>
-#include "rgbdslam/rgbdslam_ros_ui.h"
-#include "rgbdslam/rgbdslam_ros_ui_b.h"
-#include "rgbdslam/rgbdslam_ros_ui_f.h"
-#include "rgbdslam/rgbdslam_ros_ui_s.h"
+#include "rgbd_slam/rgbdslam_ros_ui.h"
+#include "rgbd_slam/rgbdslam_ros_ui_b.h"
+#include "rgbd_slam/rgbdslam_ros_ui_f.h"
+#include "rgbd_slam/rgbdslam_ros_ui_s.h"
 
 class QAction;
 
@@ -37,13 +37,13 @@ public:
     RosUi(const char* service_namespace);
 
     ///a service-client for all methods not needing an argument: {reset, quick_save, save_all, save_individual, send_all, delete_frame}
-    bool services(rgbdslam::rgbdslam_ros_ui::Request  &req, rgbdslam::rgbdslam_ros_ui::Response &res);
+    bool services(rgbd_slam::rgbdslam_ros_ui::Request  &req, rgbd_slam::rgbdslam_ros_ui::Response &res);
     ///a service-client for all methods with bool as argument: {pause, record}
-    bool services_b(rgbdslam::rgbdslam_ros_ui_b::Request  &req, rgbdslam::rgbdslam_ros_ui_b::Response &res);
+    bool services_b(rgbd_slam::rgbdslam_ros_ui_b::Request  &req, rgbd_slam::rgbdslam_ros_ui_b::Response &res);
     ///a service-client for floats, e.g., for changing the maximal depth of a point: {set_max}
-    bool services_f(rgbdslam::rgbdslam_ros_ui_f::Request  &req, rgbdslam::rgbdslam_ros_ui_f::Response &res);
+    bool services_f(rgbd_slam::rgbdslam_ros_ui_f::Request  &req, rgbd_slam::rgbdslam_ros_ui_f::Response &res);
     ///a service-client for commands with string arguments, e.g. a filename
-    bool services_s(rgbdslam::rgbdslam_ros_ui_s::Request  &req, rgbdslam::rgbdslam_ros_ui_s::Response &res);
+    bool services_s(rgbd_slam::rgbdslam_ros_ui_s::Request  &req, rgbd_slam::rgbdslam_ros_ui_s::Response &res);
 Q_SIGNALS:
     ///User selected to reset the graph
     void reset(); 

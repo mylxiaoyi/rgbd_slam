@@ -187,6 +187,7 @@ protected:
   tf::StampedTransform ground_truth_transform_;//!<contains the transformation from the mocap system
   tf::StampedTransform odom_transform_;        //!<contains the transformation from the wheel encoders/joint states
   int initial_node_matches_;
+  ros::Time mStamp;
   //void computeKeypointDepthStats(const cv::Mat& depth_img, const std::vector<cv::KeyPoint> keypoints);
 
 #ifdef USE_SIFT_GPU

@@ -377,6 +377,7 @@ void GraphManager::mergeLandmarks( Landmark *lm_1, Landmark *lm_del){
 
 
 }
+#endif
 
 Eigen::Matrix3d point_information_matrix(double distance)
 {
@@ -387,4 +388,3 @@ Eigen::Matrix3d point_information_matrix(double distance)
 
   return inf_mat;
 }
-#endif

@@ -539,7 +539,7 @@ void GraphManager::saveTrajectory(QString filebasename, bool with_ground_truth)
       tf::StampedTransform base2points = node->getBase2PointsTransform();//get pose of base w.r.t current pc at capture time
       tf::Transform world2base = init_base_pose_*base2points*pose*base2points.inverse();
 
-      logTransform(et_out, world2base, node->pc_col->header.stamp.toSec());
+      logTransform(et_out, world2base, pcl_conversions::fromPCL(node->pc_col->header.stamp).toSec());
       //Eigen::Matrix<double, 6,6> uncertainty = v->uncertainty();
       //et_out << uncertainty(0,0) << "\t" << uncertainty(1,1) << "\t" << uncertainty(2,2) << "\t" << uncertainty(3,3) << "\t" << uncertainty(4,4) << "\t" << uncertainty(5,5) <<"\n" ;
       if(with_ground_truth && !gt.empty()){
@@ -878,10 +878,10 @@ void GraphManager::broadcastTransform(Node* node, tf::Transform& computed_motion
 
 ///Send node's pointcloud with given publisher and timestamp
 void publishCloud(Node* node, ros::Time timestamp, ros::Publisher pub){
-  ros::Time stamp = node->pc_col->header.stamp; //temp storage
-  node->pc_col->header.stamp = timestamp; //to sync with tf
+  ros::Time stamp = pcl_conversions::fromPCL(node->pc_col->header.stamp); //temp storage
+  node->pc_col->header.stamp = pcl_conversions::toPCL(timestamp); //to sync with tf
   pub.publish(node->pc_col);
-  node->pc_col->header.stamp = stamp; //restore original stamp (to minimize unexpected side-effects of this function)
+  node->pc_col->header.stamp = pcl_conversions::toPCL(stamp); //restore original stamp (to minimize unexpected side-effects of this function)
   ROS_INFO("Pointcloud with id %i sent with frame %s", node->id_, node->pc_col->header.frame_id.c_str());
 }
 
